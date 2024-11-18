@@ -1,10 +1,16 @@
+#![allow(dead_code, unused)]
+
 mod db;
 mod lex;
+mod lsp;
 mod poschars;
+mod rpc;
+mod server;
 
 fn main() {
-    for line in std::io::stdin().lines() {
-        let tokens: Vec<_> = lex::Lexer::new(&line.unwrap()).map(|token| token.kind).collect();
-        std::println!("tokens: {:?}", tokens);
-    }
+    let mut server = server::Server::default();
+    eprintln!("[debug] Started server.");
+    let code = server::run(&mut server);
+    eprintln!("[debug] Exiting normally.");
+    std::process::exit(code);
 }

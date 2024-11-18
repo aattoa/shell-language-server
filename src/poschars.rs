@@ -1,4 +1,4 @@
-use crate::db::Position;
+use crate::lsp::Position;
 use std::str::Chars;
 
 /// Like Chars, but peekable and keeps track of position information.
