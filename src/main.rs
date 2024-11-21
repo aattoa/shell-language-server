@@ -1,8 +1,10 @@
-#![allow(dead_code, unused)]
+#![allow(dead_code)]
 
+mod ast;
 mod db;
 mod lex;
 mod lsp;
+mod parse;
 mod poschars;
 mod rpc;
 mod server;

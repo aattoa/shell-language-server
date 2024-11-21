@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::io::{Bytes, Read, Write};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -6,10 +7,17 @@ pub struct JsonRpc;
 
 #[derive(Debug, Deserialize)]
 pub struct Request {
-    pub id: Option<u32>,
-    pub params: Option<serde_json::Value>,
+    #[serde(default)]
+    pub params: serde_json::Value,
     pub method: String,
     pub jsonrpc: JsonRpc,
+    pub id: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Error {
+    pub code: i32,
+    pub message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -18,8 +26,18 @@ pub struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<serde_json::Value>,
+    pub error: Option<Error>,
     pub jsonrpc: JsonRpc,
+}
+
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, Serialize_repr, Deserialize_repr)]
+pub enum ErrorCode {
+    ParseError = -32700,
+    InvalidRequest = -32600,
+    MethodNotFound = -32601,
+    InvalidParams = -32602,
+    InternalError = -32603,
 }
 
 impl JsonRpc {
@@ -28,11 +46,9 @@ impl JsonRpc {
 
 impl<'de> serde::de::Visitor<'de> for JsonRpc {
     type Value = JsonRpc;
-
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         formatter.write_str(JsonRpc::VERSION)
     }
-
     fn visit_str<E: serde::de::Error>(self, str: &str) -> Result<JsonRpc, E> {
         if str == JsonRpc::VERSION { Ok(JsonRpc) } else { Err(E::custom("bad jsonrpc version")) }
     }
@@ -96,4 +112,22 @@ pub fn read_message(input: &mut impl Read) -> std::io::Result<String> {
         assert_eq!(length, read);
         String::from_utf8_lossy(&content).into_owned()
     })
+}
+
+impl Error {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Error {
+        Error { code: code as i32, message: message.into() }
+    }
+    pub fn invalid_params(message: impl Into<String>) -> Error {
+        Error::new(ErrorCode::InvalidParams, message)
+    }
+}
+
+impl Response {
+    pub fn success(id: Option<u32>, result: serde_json::Value) -> Response {
+        Response { id, result: Some(result), error: None, jsonrpc: JsonRpc }
+    }
+    pub fn error(id: Option<u32>, error: Error) -> Response {
+        Response { id, result: None, error: Some(error), jsonrpc: JsonRpc }
+    }
 }
