@@ -20,21 +20,18 @@ impl<'a> PosChars<'a> {
     pub fn new(string: &'a str) -> PosChars<'a> {
         PosChars { position: Position::default(), chars: string.chars(), next: None }
     }
-
     pub fn peek(&mut self) -> Option<char> {
         if self.next.is_none() {
             self.next = self.chars.next()
         }
         self.next
     }
-
     pub fn next_if(&mut self, predicate: impl FnOnce(char) -> bool) -> Option<char> {
         match self.peek() {
             Some(char) if predicate(char) => self.next(),
             _ => None,
         }
     }
-
     pub fn next_if_eq(&mut self, char: char) -> Option<char> {
         self.next_if(|c| char == c)
     }

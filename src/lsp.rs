@@ -26,6 +26,19 @@ pub struct Location {
     pub range: Range,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize_repr)]
+#[repr(u8)]
+pub enum ReferenceKind {
+    Read = 2,
+    Write = 3,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+pub struct Reference {
+    pub range: Range,
+    pub kind: ReferenceKind,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize_repr, Deserialize_repr)]
 #[repr(u8)]
 pub enum Severity {
@@ -115,6 +128,15 @@ impl Range {
     }
     pub fn contains(self, position: Position) -> bool {
         self.start <= position && position < self.end // End is exclusive
+    }
+}
+
+impl Reference {
+    pub fn read(range: Range) -> Reference {
+        Reference { range, kind: ReferenceKind::Read }
+    }
+    pub fn write(range: Range) -> Reference {
+        Reference { range, kind: ReferenceKind::Write }
     }
 }
 

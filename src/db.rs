@@ -1,16 +1,35 @@
-use crate::lsp;
+use crate::{ast, lsp, parse};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[derive(Default)]
+pub struct DocumentInfo {
+    pub diagnostics: Vec<lsp::Diagnostic>,
+    pub functions: HashMap<String, Vec<lsp::Reference>>,
+    pub variables: HashMap<String, Vec<lsp::Reference>>,
+    pub commands: HashMap<String, Vec<lsp::Reference>>,
+}
+
 pub struct Document {
     pub text: String,
-    pub diagnostics: Vec<lsp::Diagnostic>,
-    pub references: HashMap<String, Vec<lsp::Range>>,
+    pub info: DocumentInfo,
 }
 
 #[derive(Default)]
 pub struct Database {
     pub documents: HashMap<PathBuf, Document>,
+}
+
+impl Document {
+    pub fn new(text: impl Into<String>) -> Document {
+        Document { text: text.into(), info: DocumentInfo::default() }
+    }
+    pub fn edit(&mut self, range: lsp::Range, new_text: &str) {
+        self.text.replace_range(text_range(&self.text, range), new_text);
+    }
+    pub fn analyze(&mut self) {
+        self.info = parse::parse(&self.text).info
+    }
 }
 
 pub fn text_range(text: &str, range: lsp::Range) -> std::ops::Range<usize> {
@@ -42,12 +61,33 @@ pub fn text_range(text: &str, range: lsp::Range) -> std::ops::Range<usize> {
     begin..end
 }
 
-impl Document {
-    pub fn new(text: impl Into<String>) -> Document {
-        Document { text: text.into(), diagnostics: Vec::new(), references: HashMap::new() }
+fn add_reference(refs: &mut Vec<lsp::Reference>, new: lsp::Reference) {
+    if let Err(index) = refs.binary_search_by(|rf| rf.range.start.cmp(&new.range.start)) {
+        refs.insert(index, new);
     }
-    pub fn edit(&mut self, range: lsp::Range, new_text: &str) {
-        self.text.replace_range(text_range(&self.text, range), new_text);
+}
+
+impl DocumentInfo {
+    pub fn add_variable_read(&mut self, id: ast::Identifier) {
+        add_reference(self.variables.entry(id.name).or_default(), lsp::Reference::read(id.range))
+    }
+    pub fn add_variable_write(&mut self, id: ast::Identifier) {
+        add_reference(self.variables.entry(id.name).or_default(), lsp::Reference::write(id.range));
+    }
+    pub fn add_function_definition(&mut self, id: ast::Identifier) {
+        let references = vec![lsp::Reference::write(id.range)];
+        if self.functions.insert(id.name, references).is_some() {
+            let message = "Function redefinition is not yet supported";
+            self.diagnostics.push(lsp::Diagnostic::error(id.range, message));
+        }
+    }
+    pub fn add_command_reference(&mut self, id: ast::Identifier) {
+        if let Some(references) = self.functions.get_mut(&id.name) {
+            add_reference(references, lsp::Reference::read(id.range));
+        }
+        else {
+            self.commands.entry(id.name).or_default().push(lsp::Reference::read(id.range));
+        }
     }
 }
 
