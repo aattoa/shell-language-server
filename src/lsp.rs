@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
+use std::fmt::Display;
 use std::path::PathBuf;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -85,29 +86,50 @@ pub struct DocumentItem {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DidOpenDocumentParams {
-    #[serde(rename = "textDocument")]
-    pub document: DocumentItem,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DidCloseDocumentParams {
-    #[serde(rename = "textDocument")]
-    pub document: DocumentIdentifier,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ContentChange {
     pub range: Range,
     pub text: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
+pub struct DidOpenDocumentParams {
+    #[serde(rename = "textDocument")]
+    pub document: DocumentItem,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct DidCloseDocumentParams {
+    #[serde(rename = "textDocument")]
+    pub document: DocumentIdentifier,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct DidChangeDocumentParams {
     #[serde(rename = "textDocument")]
     pub document: VersionedDocumentIdentifier,
     #[serde(rename = "contentChanges")]
     pub changes: Vec<ContentChange>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct PullDiagnosticParams {
+    #[serde(rename = "textDocument")]
+    pub document: DocumentIdentifier,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct PositionParams {
+    #[serde(rename = "textDocument")]
+    pub document: DocumentIdentifier,
+    pub position: Position,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct RenameParams {
+    #[serde(flatten)]
+    pub position_params: PositionParams,
+    #[serde(rename = "newName")]
+    pub new_name: String,
 }
 
 impl Position {
@@ -152,9 +174,15 @@ impl Diagnostic {
     }
 }
 
+impl Display for DocumentURI {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "file://{}", self.path.display())
+    }
+}
+
 impl Serialize for DocumentURI {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&format!("file://{}", self.path.display()))
+        s.serialize_str(&self.to_string())
     }
 }
 
@@ -163,7 +191,7 @@ struct DocumentURIVisitor;
 impl<'de> serde::de::Visitor<'de> for DocumentURIVisitor {
     type Value = DocumentURI;
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("a URI with file:// scheme")
+        formatter.write_str("a URI with file scheme")
     }
     fn visit_str<E: serde::de::Error>(self, str: &str) -> Result<DocumentURI, E> {
         let uri = |path| DocumentURI { path: PathBuf::from(path) };

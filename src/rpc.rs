@@ -114,6 +114,12 @@ pub fn read_message(input: &mut impl Read) -> std::io::Result<String> {
     })
 }
 
+impl From<serde_json::Error> for Error {
+    fn from(error: serde_json::Error) -> Error {
+        Error::invalid_params(error.to_string())
+    }
+}
+
 impl Error {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Error {
         Error { code: code as i32, message: message.into() }
