@@ -24,6 +24,7 @@ fn server_capabilities() -> Json {
         "referencesProvider": true,
         "documentHighlightProvider": true,
         "renameProvider": { "prepareProvider": true },
+        "completionProvider": {},
     })
 }
 
@@ -74,13 +75,41 @@ fn collect_references<T>(
 
 fn find_definition(info: &db::DocumentInfo, position: lsp::Position) -> Option<lsp::Reference> {
     search(info.variables.values(), position)
-        .and_then(|references| {
-            references.iter().find(|reference| reference.kind == lsp::ReferenceKind::Write)
-        })
-        .or_else(|| {
-            search(info.functions.values(), position).and_then(|references| references.first())
-        })
+        .or_else(|| search(info.functions.values(), position))
+        .and_then(|refs| refs.iter().find(|reference| reference.kind == lsp::ReferenceKind::Write))
         .copied()
+}
+
+fn get_line(document: &db::Document, line: u32) -> Result<&str, rpc::Error> {
+    let error = || rpc::Error::invalid_params(format!("Line {line} out of range"));
+    document.text.lines().nth(line as usize).ok_or_else(error)
+}
+
+fn is_word(char: char) -> bool {
+    char.is_alphanumeric() || char == '_' || char == '-'
+}
+
+fn determine_completion_kind(
+    prefix: &str,
+    cursor: lsp::Position,
+) -> (usize, lsp::CompletionItemKind) {
+    for (index, char) in prefix.chars().rev().enumerate() {
+        if char == '$' {
+            return (cursor.column as usize - index, lsp::CompletionItemKind::Variable);
+        }
+        else if !is_word(char) {
+            return (cursor.column as usize - index, lsp::CompletionItemKind::Function);
+        }
+    }
+    (0, lsp::CompletionItemKind::Function)
+}
+
+fn completion(range: lsp::Range, name: &str, kind: lsp::CompletionItemKind) -> Json {
+    json!({
+        "label": name,
+        "kind": kind,
+        "edit": { "range": range, "newText": name },
+    })
 }
 
 fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Json, rpc::Error> {
@@ -138,6 +167,32 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
             let params: lsp::PullDiagnosticParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
             Ok(json!({ "kind": "full", "items": document.info.diagnostics }))
+        }
+        "textDocument/completion" => {
+            let params: lsp::PositionParams = from_value(params)?;
+            let document = get_document(&server.db, &params.document)?;
+            let line = get_line(document, params.position.line)?;
+            let line_prefix = &line[..params.position.column as usize];
+            let (offset, kind) = determine_completion_kind(line_prefix, params.position);
+            let prefix = &line_prefix[offset..];
+            let start = lsp::Position { line: params.position.line, column: offset as u32 };
+            let range = lsp::Range { start, end: params.position };
+            match kind {
+                lsp::CompletionItemKind::Variable => Ok(Json::Array(
+                    (document.info.variables.keys())
+                        .filter(|name| name.starts_with(prefix))
+                        .map(|name| completion(range, name, lsp::CompletionItemKind::Variable))
+                        .collect(),
+                )),
+                lsp::CompletionItemKind::Function => Ok(Json::Array({
+                    (document.info.functions.keys())
+                        .chain(document.info.commands.keys())
+                        .filter(|name| name.starts_with(prefix))
+                        .map(|name| completion(range, name, lsp::CompletionItemKind::Function))
+                        .collect()
+                })),
+                _ => Err(rpc::Error::new(rpc::ErrorCode::InternalError, "completion failure")),
+            }
         }
         _ => Err(rpc::Error::new(
             rpc::ErrorCode::MethodNotFound,

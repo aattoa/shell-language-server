@@ -132,6 +132,42 @@ pub struct RenameParams {
     pub new_name: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct MarkupContent {
+    pub kind: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TextEdit {
+    pub range: Range,
+    #[serde(rename = "newText")]
+    pub new_text: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize_repr)]
+#[repr(u8)]
+pub enum CompletionItemKind {
+    Text = 1,
+    Function = 3,
+    Variable = 6,
+    Snippet = 15,
+    File = 17,
+    Directory = 18,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CompletionItem {
+    pub label: String,
+    pub kind: CompletionItemKind,
+    #[serde(rename = "textEdit")]
+    pub edit: TextEdit,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<MarkupContent>,
+}
+
 impl Position {
     pub fn advance(&mut self, char: char) {
         if char == '\n' {
