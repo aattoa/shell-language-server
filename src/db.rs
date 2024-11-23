@@ -18,6 +18,8 @@ pub struct Document {
 #[derive(Default)]
 pub struct Database {
     pub documents: HashMap<PathBuf, Document>,
+    pub path_executables: Vec<String>,
+    pub environment_variables: Vec<String>,
 }
 
 impl Document {

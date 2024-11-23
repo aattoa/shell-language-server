@@ -180,6 +180,7 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
             match kind {
                 lsp::CompletionItemKind::Variable => Ok(Json::Array(
                     (document.info.variables.keys())
+                        .chain(server.db.environment_variables.iter())
                         .filter(|name| name.starts_with(prefix))
                         .map(|name| completion(range, name, lsp::CompletionItemKind::Variable))
                         .collect(),
@@ -187,6 +188,7 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
                 lsp::CompletionItemKind::Function => Ok(Json::Array({
                     (document.info.functions.keys())
                         .chain(document.info.commands.keys())
+                        .chain(server.db.path_executables.iter())
                         .filter(|name| name.starts_with(prefix))
                         .map(|name| completion(range, name, lsp::CompletionItemKind::Function))
                         .collect()
