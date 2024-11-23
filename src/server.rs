@@ -1,4 +1,4 @@
-use crate::{db, lsp, rpc};
+use crate::{config, db, env, lsp, rpc};
 use serde_json::{from_value, json};
 use std::cmp::Ordering;
 type Json = serde_json::Value;
@@ -270,15 +270,26 @@ fn handle_message(server: &mut Server, message: &str) -> Option<String> {
     reply.map(|reply| serde_json::to_string(&reply).expect("Reply serialization failed"))
 }
 
-pub fn run(server: &mut Server) -> i32 {
+pub fn run(config: config::Config) -> i32 {
+    let mut server = Server::default();
+    if config.complete.env_path {
+        server.db.path_executables = env::collect_path_executables();
+    }
+    if config.complete.env_vars {
+        server.db.environment_variables = env::collect_variables();
+    }
     let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
     while server.exit_code.is_none() {
         match rpc::read_message(&mut stdin) {
             Ok(message) => {
-                eprintln!("[debug] --> {}", message);
-                if let Some(reply) = handle_message(server, &message) {
-                    eprintln!("[debug] <-- {}", reply);
+                if config.debug {
+                    eprintln!("[debug] --> {}", message);
+                }
+                if let Some(reply) = handle_message(&mut server, &message) {
+                    if config.debug {
+                        eprintln!("[debug] <-- {}", reply);
+                    }
                     if let Err(error) = rpc::write_message(&mut stdout, &reply) {
                         eprintln!("[debug] Unable to write reply: {error}");
                         return -1;
