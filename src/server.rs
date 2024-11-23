@@ -277,7 +277,10 @@ pub fn run(server: &mut Server) -> i32 {
                 eprintln!("[debug] --> {}", message);
                 if let Some(reply) = handle_message(server, &message) {
                     eprintln!("[debug] <-- {}", reply);
-                    rpc::write_message(&mut stdout, &reply);
+                    if let Err(error) = rpc::write_message(&mut stdout, &reply) {
+                        eprintln!("[debug] Unable to write reply: {error}");
+                        return -1;
+                    }
                 }
             }
             Err(error) => {

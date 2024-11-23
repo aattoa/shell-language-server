@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use std::io::{Bytes, Read, Write};
+use std::io::{Read, Write};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct JsonRpc;
@@ -66,26 +66,23 @@ impl<'de> Deserialize<'de> for JsonRpc {
     }
 }
 
-fn consume(mut read: Bytes<impl Read>, slice: &[u8]) -> bool {
-    slice.iter().all(|&char| read.next().is_some_and(|byte| byte.is_ok_and(|byte| byte == char)))
+fn consume(input: &mut impl Read, bytes: usize) -> bool {
+    input.bytes().take(bytes).count() == bytes
 }
 
-pub fn write_message(output: &mut impl Write, content: &str) -> bool {
+pub fn write_message(output: &mut impl Write, content: &str) -> std::io::Result<()> {
     write!(output, "Content-Length: {}\r\n\r\n{}", content.len(), content)
-        .inspect(|()| output.flush().expect("failed to flush output"))
-        .is_ok()
+        .and_then(|()| output.flush())
 }
 
 pub fn read_message(input: &mut impl Read) -> std::io::Result<String> {
     let error = |msg| Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, msg));
 
-    if !consume(input.bytes(), "Content-Length: ".as_bytes()) {
-        return error("Missing Content-Length header");
+    if !consume(input, "Content-Length: ".len()) {
+        return error("Missing Content-Length header.");
     }
 
     let mut length: usize = 0;
-    let mut content = Vec::new();
-
     for byte in input.bytes() {
         let byte = byte?;
         if byte.is_ascii_digit() {
@@ -93,24 +90,28 @@ pub fn read_message(input: &mut impl Read) -> std::io::Result<String> {
             length += (byte - b'0') as usize;
         }
         else if byte == b'\r' {
-            content.reserve(length);
             break;
         }
         else {
-            return error("unexpected byte value");
+            return error("Unexpected byte.");
         }
     }
 
     if length == 0 {
-        return error("Missing content length");
+        return error("Missing content length.");
     }
-    if !consume(input.bytes(), "\n\r\n".as_bytes()) {
-        return error("Missing content separator");
+    if !consume(input, "\n\r\n".len()) {
+        return error("Missing content separator.");
     }
 
-    input.take(length as u64).read_to_end(&mut content).map(|read| {
-        assert_eq!(length, read);
-        String::from_utf8_lossy(&content).into_owned()
+    let mut content = Vec::with_capacity(length);
+    input.take(length as u64).read_to_end(&mut content).and_then(|read| {
+        if length == read {
+            Ok(String::from_utf8_lossy(&content).into_owned())
+        }
+        else {
+            error("Premature end of input.")
+        }
     })
 }
 
