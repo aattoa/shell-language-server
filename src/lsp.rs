@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::fmt::Display;
 use std::path::PathBuf;
 
@@ -27,8 +26,7 @@ pub struct Location {
     pub range: Range,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize_repr)]
-#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ReferenceKind {
     Read = 2,
     Write = 3,
@@ -40,8 +38,7 @@ pub struct Reference {
     pub kind: ReferenceKind,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize_repr, Deserialize_repr)]
-#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Severity {
     Error = 1,
     Warning = 2,
@@ -55,7 +52,7 @@ pub struct DiagnosticRelated {
     pub message: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Diagnostic {
     pub range: Range,
     pub severity: Severity,
@@ -132,9 +129,15 @@ pub struct RenameParams {
     pub new_name: String,
 }
 
+#[derive(Clone, Debug)]
+pub enum MarkupKind {
+    Plaintext,
+    Markdown,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct MarkupContent {
-    pub kind: String,
+    pub kind: MarkupKind,
     pub value: String,
 }
 
@@ -145,8 +148,7 @@ pub struct TextEdit {
     pub new_text: String,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize_repr)]
-#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CompletionItemKind {
     Text = 1,
     Function = 3,
@@ -210,9 +212,36 @@ impl Diagnostic {
     }
 }
 
+impl Serialize for Severity {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_i32(*self as i32)
+    }
+}
+
+impl Serialize for CompletionItemKind {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_i32(*self as i32)
+    }
+}
+
+impl Serialize for ReferenceKind {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_i32(*self as i32)
+    }
+}
+
+impl Serialize for MarkupKind {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(match self {
+            MarkupKind::Plaintext => "plaintext",
+            MarkupKind::Markdown => "markdown",
+        })
+    }
+}
+
 impl Display for DocumentURI {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(formatter, "file://{}", self.path.display())
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "file://{}", self.path.display())
     }
 }
 

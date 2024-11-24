@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::io::{Read, Write};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -15,12 +14,6 @@ pub struct Request {
 }
 
 #[derive(Debug, Serialize)]
-pub struct Error {
-    pub code: i32,
-    pub message: String,
-}
-
-#[derive(Debug, Serialize)]
 pub struct Response {
     pub id: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -30,14 +23,25 @@ pub struct Response {
     pub jsonrpc: JsonRpc,
 }
 
-#[repr(i32)]
-#[derive(Clone, Copy, Debug, Serialize_repr, Deserialize_repr)]
+#[derive(Debug, Serialize)]
+pub struct Error {
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub enum ErrorCode {
     ParseError = -32700,
     InvalidRequest = -32600,
     MethodNotFound = -32601,
     InvalidParams = -32602,
     InternalError = -32603,
+}
+
+impl Serialize for ErrorCode {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_i32(*self as i32)
+    }
 }
 
 impl JsonRpc {
@@ -123,7 +127,7 @@ impl From<serde_json::Error> for Error {
 
 impl Error {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Error {
-        Error { code: code as i32, message: message.into() }
+        Error { code, message: message.into() }
     }
     pub fn invalid_params(message: impl Into<String>) -> Error {
         Error::new(ErrorCode::InvalidParams, message)
