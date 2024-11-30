@@ -4,21 +4,34 @@ use crate::poschars::PosChars;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TokenKind {
     Word,
-    RawString,
-    Comment,
-    Error,
-    DoubleQuote,
-    ParenOpen,
-    ParenClose,
-    BraceOpen,
-    BraceClose,
-    Equals,
-    Dollar,
-    Pipe,
-    Ampersand,
-    Semicolon,
+    RawString,    // 'text'
+    Comment,      // # text
+    BackQuote,    // `
+    DoubleQuote,  // "
+    ParenOpen,    // (
+    ParenClose,   // )
+    BraceOpen,    // {
+    BraceClose,   // }
+    Less,         // <
+    LessLess,     // <<
+    LessLessDash, // <<-
+    LessAnd,      // <&
+    Great,        // >
+    GreatGreat,   // >>
+    GreatAnd,     // >&
+    LessGreat,    // <>
+    Clobber,      // >|
+    Equals,       // =
+    Dollar,       // $
+    Pipe,         // |
+    PipePipe,     // ||
+    And,          // &
+    AndAnd,       // &&
+    Semi,         // ;
+    SemiSemi,     // ;;
     NewLine,
     Space,
+    Error, // Input that could not be lexed.
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -34,7 +47,7 @@ pub struct Lexer<'a> {
 }
 
 fn is_word(char: char) -> bool {
-    char.is_alphanumeric() || ['_', '-'].contains(&char)
+    char.is_alphanumeric() || "-_/.,:".contains(char)
 }
 
 fn extract_word_char(chars: &mut PosChars) -> Option<char> {
@@ -61,7 +74,11 @@ fn extract_raw_string(chars: &mut PosChars) -> (TokenKind, Option<String>) {
 }
 
 fn extract_comment(chars: &mut PosChars) -> (TokenKind, Option<String>) {
-    (TokenKind::Comment, Some(chars.take_while(|&char| char != '\n').collect()))
+    let mut comment = String::new();
+    while let Some(char) = chars.next_if(|char| char != '\n') {
+        comment.push(char);
+    }
+    (TokenKind::Comment, Some(comment))
 }
 
 fn extract_whitespace(chars: &mut PosChars) -> TokenKind {
@@ -75,15 +92,18 @@ fn next_token(char: char, chars: &mut PosChars) -> (TokenKind, Option<String>) {
         '\\' => extract_word(chars.next().unwrap_or(char), chars),
         '\'' => extract_raw_string(chars),
         '"' => (TokenKind::DoubleQuote, None),
+        '`' => (TokenKind::BackQuote, None),
         '(' => (TokenKind::ParenOpen, None),
         ')' => (TokenKind::ParenClose, None),
         '{' => (TokenKind::BraceOpen, None),
         '}' => (TokenKind::BraceClose, None),
+        '<' => (TokenKind::Less, None),
+        '>' => (TokenKind::Great, None),
         '|' => (TokenKind::Pipe, None),
         '=' => (TokenKind::Equals, None),
         '$' => (TokenKind::Dollar, None),
-        '&' => (TokenKind::Ampersand, None),
-        ';' => (TokenKind::Semicolon, None),
+        '&' => (TokenKind::And, None),
+        ';' => (TokenKind::Semi, None),
         '\n' => (TokenKind::NewLine, None),
         _ if is_word(char) => extract_word(char, chars),
         _ if char.is_whitespace() => (extract_whitespace(chars), None),
@@ -136,19 +156,32 @@ impl TokenKind {
             TokenKind::Word => "a word",
             TokenKind::RawString => "a raw string",
             TokenKind::Comment => "a comment",
-            TokenKind::Error => "an error",
+            TokenKind::BackQuote => "a backquote",
             TokenKind::DoubleQuote => "a double quote",
             TokenKind::ParenOpen => "an opening parenthesis",
             TokenKind::ParenClose => "a closing parenthesis",
             TokenKind::BraceOpen => "an opening brace",
-            TokenKind::BraceClose => "a closing parenthesis",
+            TokenKind::BraceClose => "a closing brace",
+            TokenKind::Less => "'<'",
+            TokenKind::LessLess => "'<<'",
+            TokenKind::LessLessDash => "'<<-'",
+            TokenKind::LessAnd => "'<&'",
+            TokenKind::Great => "'>'",
+            TokenKind::GreatGreat => "'>>'",
+            TokenKind::GreatAnd => "'>&'",
+            TokenKind::LessGreat => "'<>'",
+            TokenKind::Clobber => "'>|'",
             TokenKind::Equals => "an equals sign",
             TokenKind::Dollar => "a dollar sign",
-            TokenKind::Pipe => "a pipe",
-            TokenKind::Ampersand => "an ampersand",
-            TokenKind::Semicolon => "a semicolon",
+            TokenKind::Pipe => "'|'",
+            TokenKind::PipePipe => "'||'",
+            TokenKind::And => "'&'",
+            TokenKind::AndAnd => "'&&'",
+            TokenKind::Semi => "a semicolon",
+            TokenKind::SemiSemi => "a double semicolon",
             TokenKind::NewLine => "a new line",
             TokenKind::Space => "whitespace",
+            TokenKind::Error => "a lexical error",
         }
     }
 }

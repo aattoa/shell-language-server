@@ -142,3 +142,21 @@ impl Response {
         Response { id, result: None, error: Some(error), jsonrpc: JsonRpc }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn read_message() {
+        let mut input = "Content-Length: 5\r\n\r\nhelloContent-Length: 6\r\n\r\nworld!".as_bytes();
+        assert_eq!(super::read_message(&mut input).unwrap(), "hello");
+        assert_eq!(super::read_message(&mut input).unwrap(), "world!");
+        assert!(super::read_message(&mut input).is_err());
+    }
+    #[test]
+    fn write_message() {
+        let mut output = Vec::new();
+        assert!(super::write_message(&mut output, "hello").is_ok());
+        assert!(super::write_message(&mut output, "world!").is_ok());
+        assert_eq!(output, b"Content-Length: 5\r\n\r\nhelloContent-Length: 6\r\n\r\nworld!");
+    }
+}

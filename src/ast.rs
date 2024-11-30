@@ -9,6 +9,7 @@ pub struct Identifier {
 #[derive(Clone, PartialEq, Debug)]
 pub enum Expansion {
     Simple(Identifier),
+    Statement(Box<Statement>),
 }
 
 #[derive(Clone, PartialEq, Debug)]
