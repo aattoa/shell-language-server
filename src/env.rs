@@ -11,14 +11,22 @@ fn is_executable(data: std::fs::Metadata) -> bool {
     !data.is_dir()
 }
 
+fn sorted<T: Ord>(mut vec: Vec<T>) -> Vec<T> {
+    vec.sort_unstable();
+    vec.dedup();
+    vec
+}
+
 pub fn collect_path_executables() -> Vec<String> {
     match std::env::var("PATH") {
-        Ok(path) => std::env::split_paths(&path)
-            .flat_map(std::fs::read_dir)
-            .flat_map(|dir| dir.filter_map(Result::ok))
-            .filter(|entry| entry.metadata().is_ok_and(is_executable))
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .collect(),
+        Ok(path) => sorted(
+            std::env::split_paths(&path)
+                .flat_map(std::fs::read_dir)
+                .flat_map(|dir| dir.filter_map(Result::ok))
+                .filter(|entry| entry.metadata().is_ok_and(is_executable))
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .collect(),
+        ),
         Err(error) => {
             eprintln!("[debug] Could not read PATH: {error}");
             Vec::new()
