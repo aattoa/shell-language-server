@@ -10,6 +10,7 @@ mod parse;
 mod poschars;
 mod rpc;
 mod server;
+mod shell;
 
 const HELP: &str = r"Options:
   --help, -h       Display help information

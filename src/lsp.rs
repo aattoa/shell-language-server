@@ -207,6 +207,9 @@ impl Diagnostic {
     pub fn error(range: Range, message: impl Into<String>) -> Diagnostic {
         Diagnostic::new(range, Severity::Error, message.into())
     }
+    pub fn warning(range: Range, message: impl Into<String>) -> Diagnostic {
+        Diagnostic::new(range, Severity::Warning, message.into())
+    }
     pub fn info(range: Range, message: impl Into<String>) -> Diagnostic {
         Diagnostic::new(range, Severity::Information, message.into())
     }

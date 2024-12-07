@@ -1,4 +1,5 @@
 use crate::lex::{Lexer, Token, TokenKind};
+use crate::shell::Shell;
 use crate::{ast, db, lsp};
 
 type ParseResult<T> = Result<T, lsp::Diagnostic>;
@@ -324,7 +325,9 @@ fn extract_statements_until(ctx: &mut Context, f: impl Fn(&Token) -> bool) -> Ve
     let mut statements = Vec::new();
     while !ctx.tokens.peek().is_none_or(&f) {
         match extract_statement(ctx) {
-            Ok(statement) => statements.push(statement),
+            Ok(statement) => {
+                statements.push(statement);
+            }
             Err(diagnostic) => {
                 ctx.info.diagnostics.push(diagnostic);
                 skip_to_next_recovery_point(ctx);
@@ -334,6 +337,26 @@ fn extract_statements_until(ctx: &mut Context, f: impl Fn(&Token) -> bool) -> Ve
     statements
 }
 
+fn parse_shebang(ctx: &mut Context) {
+    if let Some(token) = ctx.tokens.peek() {
+        if token.kind == TokenKind::Comment {
+            if let Some(shebang) = token.value.as_ref().unwrap().strip_prefix('!') {
+                match shebang.parse() {
+                    Ok(Shell::Posix) => {}
+                    Ok(shell) => {
+                        let message = format!("{} is not supported yet", shell.name());
+                        ctx.info.diagnostics.push(lsp::Diagnostic::warning(token.range, message));
+                    }
+                    Err(error) => {
+                        ctx.info.diagnostics.push(lsp::Diagnostic::warning(token.range, error));
+                    }
+                }
+                ctx.tokens.next();
+            }
+        }
+    }
+}
+
 pub struct ParseData {
     pub program: Vec<ast::Statement>,
     pub info: db::DocumentInfo,
@@ -341,6 +364,8 @@ pub struct ParseData {
 
 pub fn parse(input: &str) -> ParseData {
     let mut ctx = Context::new(input);
+    parse_shebang(&mut ctx);
+    ctx.skip_empty_lines();
     let program = extract_statements_until(&mut ctx, |_| false);
     ParseData { program, info: ctx.info }
 }
