@@ -133,7 +133,7 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
             let params: lsp::PositionParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
             let loc = |r: lsp::Reference| json!({ "uri": params.document.uri, "range": r.range });
-            Ok(find_definition(&document.info, params.position).map(loc).unwrap_or_default())
+            Ok(find_definition(&document.info, params.position).map_or(Json::Null, loc))
         }
         "textDocument/references" => {
             let params: lsp::PositionParams = from_value(params)?;
@@ -149,12 +149,8 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
         "textDocument/prepareRename" => {
             let params: lsp::PositionParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
-            if find_references(&document.info, params.position).is_empty() {
-                Ok(Json::Null)
-            }
-            else {
-                Ok(json!({ "defaultBehavior": true }))
-            }
+            let references = find_references(&document.info, params.position);
+            Ok(references.first().map_or(Json::Null, |reference| json!(reference.range)))
         }
         "textDocument/rename" => {
             let params: lsp::RenameParams = from_value(params)?;
