@@ -1,141 +1,138 @@
-use crate::lex::{Lexer, Token, TokenKind};
+use crate::lex::{self, Lexer, Token, TokenKind};
 use crate::shell::Shell;
-use crate::{ast, db, lsp};
+use crate::{db, lsp};
 
 type ParseResult<T> = Result<T, lsp::Diagnostic>;
 
 struct Context<'a> {
-    tokens: Lexer<'a>,
     info: db::DocumentInfo,
+    lexer: Lexer<'a>,
+    document: &'a str,
 }
 
 impl<'a> Context<'a> {
-    fn new(input: &str) -> Context {
-        Context { tokens: Lexer::new(input), info: db::DocumentInfo::default() }
-    }
-    fn skip_whitespace(&mut self) {
-        while self
-            .tokens
-            .next_if(|tok| matches!(tok.kind, TokenKind::Space | TokenKind::Comment))
-            .is_some()
-        {}
-    }
-    fn skip_empty_lines(&mut self) {
-        while self
-            .tokens
-            .next_if(|tok| {
-                matches!(tok.kind, TokenKind::Space | TokenKind::Comment | TokenKind::NewLine)
-            })
-            .is_some()
-        {}
-    }
-    fn current_range(&mut self) -> lsp::Range {
-        self.tokens
-            .peek()
-            .map(|tok| tok.range)
-            .unwrap_or_else(|| lsp::Range::for_position(self.tokens.position()))
+    fn new(document: &'a str) -> Self {
+        Self { info: db::DocumentInfo::default(), lexer: Lexer::new(document), document }
     }
     fn error(&mut self, message: impl Into<String>) -> lsp::Diagnostic {
-        lsp::Diagnostic::error(self.current_range(), message)
+        lsp::Diagnostic::error(self.lexer.current_range(), message)
     }
     fn expected(&mut self, description: &str) -> lsp::Diagnostic {
-        let found = self.tokens.peek().map_or("the end of input", |tok| tok.kind.show());
+        let found = self.lexer.peek().map_or("the end of input", |token| token.kind.show());
         self.error(format!("Expected {}, but found {}", description, found))
     }
-    fn require_keyword(&mut self, keyword: &str) -> ParseResult<()> {
+    fn expect(&mut self, kind: TokenKind) -> ParseResult<Token> {
+        self.lexer.next_if_kind(kind).ok_or_else(|| self.expected(kind.show()))
+    }
+    fn expect_word(&mut self, keyword: &str) -> ParseResult<()> {
         if parse_keyword(self, keyword) { Ok(()) } else { Err(self.expected(keyword)) }
     }
-    fn require_token_kind(&mut self, kind: TokenKind) -> ParseResult<Token> {
-        self.tokens.next_if_kind(kind).ok_or_else(|| self.expected(kind.show()))
-    }
-    fn require_statement_end(&mut self) -> ParseResult<()> {
-        self.skip_whitespace();
-        if self.tokens.next_if(is_statement_end).is_some() {
-            self.skip_whitespace();
-            Ok(())
-        }
-        else {
-            Err(self.expected("a new line or a semicolon"))
-        }
-    }
-    fn require_token(&mut self) -> ParseResult<Token> {
-        self.tokens.next().ok_or_else(|| self.error("Unexpected end of input"))
+    fn consume(&mut self, kind: TokenKind) -> bool {
+        self.lexer.next_if_kind(kind).is_some()
     }
 }
 
-fn is_keyword(token: &Token, keywords: &[&str]) -> bool {
-    token.kind == TokenKind::Word && keywords.contains(&token.value.as_ref().unwrap().as_str())
+fn kind_matches(kinds: &'static [TokenKind]) -> impl Fn(Token) -> bool + Copy {
+    |token| kinds.contains(&token.kind)
 }
 
-fn is_statement_end(token: &Token) -> bool {
-    matches!(token.kind, TokenKind::Semi | TokenKind::NewLine)
+fn is_statement_end(token: Token) -> bool {
+    kind_matches(&[TokenKind::Semi, TokenKind::NewLine])(token)
 }
 
-fn identifier(token: Token) -> ast::Identifier {
-    ast::Identifier { name: token.value.unwrap(), range: token.range }
+fn skip_whitespace(ctx: &mut Context) {
+    let predicate = kind_matches(&[TokenKind::Space, TokenKind::Comment]);
+    while ctx.lexer.next_if(predicate).is_some() {}
+}
+
+fn skip_empty_lines(ctx: &mut Context) {
+    let predicate = kind_matches(&[TokenKind::Space, TokenKind::Comment, TokenKind::NewLine]);
+    while ctx.lexer.next_if(predicate).is_some() {}
+}
+
+fn expect_statement_end(ctx: &mut Context) -> ParseResult<()> {
+    skip_whitespace(ctx);
+    if ctx.lexer.next_if(is_statement_end).is_some() {
+        skip_whitespace(ctx);
+        Ok(())
+    }
+    else {
+        Err(ctx.expected("a new line or a semicolon"))
+    }
+}
+
+fn is_keyword(document: &str, token: Token, keywords: &[&str]) -> bool {
+    token.kind == TokenKind::Word && keywords.contains(&token.view.string(document))
+}
+
+fn identifier(document: &str, token: Token) -> db::Identifier {
+    db::Identifier { name: lex::escape(token.view.string(document)), range: token.range }
 }
 
 fn parse_keyword(ctx: &mut Context, keyword: &str) -> bool {
-    ctx.tokens
-        .next_if(|tok| tok.kind == TokenKind::Word && tok.value.as_ref().unwrap() == keyword)
+    ctx.lexer
+        .next_if(|token| {
+            token.kind == TokenKind::Word && token.view.string(ctx.document) == keyword
+        })
         .is_some()
 }
 
-fn parse_dollar(dollar: Token, ctx: &mut Context) -> ParseResult<ast::Value> {
-    parse_expansion(dollar, ctx).map(|exp| exp.map_or(ast::Value::Symbol, ast::Value::Expansion))
+fn parse_dollar(dollar: Token, ctx: &mut Context) -> ParseResult<()> {
+    parse_expansion(dollar, ctx).map(|_| ())
 }
 
-fn parse_word(ctx: &mut Context) -> ParseResult<Option<ast::Value>> {
-    if let Some(word) = ctx.tokens.next_if_kind(TokenKind::Word) {
-        Ok(Some(ast::Value::Word(word.value.unwrap())))
+fn parse_word(ctx: &mut Context) -> ParseResult<bool> {
+    Ok(if ctx.consume(TokenKind::Word) {
+        true
     }
-    else if let Some(dollar) = ctx.tokens.next_if_kind(TokenKind::Dollar) {
-        parse_dollar(dollar, ctx).map(Some)
+    else if let Some(dollar) = ctx.lexer.next_if_kind(TokenKind::Dollar) {
+        parse_dollar(dollar, ctx)?;
+        true
     }
     else {
-        Ok(None)
-    }
+        false
+    })
 }
 
-fn parse_simple_value(ctx: &mut Context) -> ParseResult<Option<ast::Value>> {
-    if let Some(quote) = ctx.tokens.next_if_kind(TokenKind::DoubleQuote) {
-        Ok(Some(ast::Value::DoubleQuotedString(parse_string(ctx, quote))))
+fn parse_simple_value(ctx: &mut Context) -> ParseResult<bool> {
+    if let Some(quote) = ctx.lexer.next_if_kind(TokenKind::DoubleQuote) {
+        parse_string(ctx, quote);
+        Ok(true)
     }
-    else if let Some(string) = ctx.tokens.next_if_kind(TokenKind::RawString) {
-        Ok(Some(ast::Value::RawString(string.value.unwrap())))
-    }
-    else if ctx.tokens.next_if_kind(TokenKind::Equals).is_some() {
-        Ok(Some(ast::Value::Symbol))
+    else if ctx
+        .lexer
+        .next_if(kind_matches(&[
+            TokenKind::RawString,
+            TokenKind::Equals,
+            TokenKind::DollarHash,
+        ]))
+        .is_some()
+    {
+        Ok(true)
     }
     else {
         parse_word(ctx)
     }
 }
 
-fn parse_value(ctx: &mut Context) -> ParseResult<Option<ast::Value>> {
-    let mut values = Vec::new();
-    while let Some(value) = parse_simple_value(ctx)? {
-        values.push(value);
+fn parse_value(ctx: &mut Context) -> ParseResult<bool> {
+    Ok(if parse_simple_value(ctx)? {
+        while parse_simple_value(ctx)? {}
+        true
     }
-    Ok(match values.len() {
-        0 => None,
-        1 => Some(values.pop().unwrap()),
-        _ => Some(ast::Value::Concatenation(values)),
+    else {
+        false
     })
 }
 
-fn extract_arguments_until(ctx: &mut Context, pred: impl Fn(&Token) -> bool) -> Vec<ast::Value> {
-    let mut arguments = Vec::new();
-    while !ctx.tokens.peek().is_none_or(&pred) {
+fn extract_arguments_until(ctx: &mut Context, pred: impl Fn(Token) -> bool) {
+    while !ctx.lexer.peek().is_none_or(&pred) {
         match parse_value(ctx) {
-            Ok(Some(value)) => {
-                arguments.push(value);
-                ctx.skip_whitespace();
-            }
-            Ok(None) => {
-                let diagnostic = ctx.expected("a value");
+            Ok(true) => skip_whitespace(ctx),
+            Ok(false) => {
+                let diagnostic = ctx.expected("an argument");
                 ctx.info.diagnostics.push(diagnostic);
-                ctx.tokens.next();
+                ctx.lexer.next();
                 break;
             }
             Err(diagnostic) => {
@@ -144,145 +141,130 @@ fn extract_arguments_until(ctx: &mut Context, pred: impl Fn(&Token) -> bool) -> 
             }
         }
     }
-    arguments
 }
 
-fn parse_expansion(dollar: Token, ctx: &mut Context) -> ParseResult<Option<ast::Expansion>> {
-    if let Some(word) = ctx.tokens.next_if_kind(TokenKind::Word) {
-        let identifier = identifier(word);
-        ctx.info.add_variable_read(identifier.clone());
-        Ok(Some(ast::Expansion::Simple(identifier)))
+fn parse_expansion(dollar: Token, ctx: &mut Context) -> ParseResult<bool> {
+    Ok(if let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
+        ctx.info.add_variable_read(identifier(ctx.document, word));
+        true
     }
-    else if ctx.tokens.next_if_kind(TokenKind::BraceOpen).is_some() {
-        let identifier = identifier(ctx.require_token_kind(TokenKind::Word)?);
-        ctx.info.add_variable_read(identifier.clone());
-        ctx.require_token_kind(TokenKind::BraceClose)?;
-        Ok(Some(ast::Expansion::Simple(identifier)))
+    else if ctx.consume(TokenKind::BraceOpen) {
+        let name = ctx.expect(TokenKind::Word)?;
+        ctx.info.add_variable_read(identifier(ctx.document, name));
+        ctx.expect(TokenKind::BraceClose)?;
+        true
     }
-    else if ctx.tokens.next_if_kind(TokenKind::ParenOpen).is_some() {
-        let statement = extract_statement_up_to(ctx, |tok| tok.kind == TokenKind::ParenClose)?;
-        ctx.require_token_kind(TokenKind::ParenClose)?;
-        Ok(Some(ast::Expansion::Statement(Box::new(statement))))
+    else if ctx.consume(TokenKind::ParenOpen) {
+        extract_statement_up_to(ctx, |token| token.kind == TokenKind::ParenClose)?;
+        ctx.expect(TokenKind::ParenClose)?;
+        true
     }
     else {
         let message = "This `$` is literal. Use `\\$` to suppress this hint.";
         ctx.info.diagnostics.push(lsp::Diagnostic::info(dollar.range, message));
-        Ok(None)
-    }
+        false
+    })
 }
 
-fn parse_string(ctx: &mut Context, quote: Token) -> Vec<ast::Expansion> {
-    let mut expansions = Vec::new();
-    while let Some(tok) = ctx.tokens.next() {
-        match tok.kind {
-            TokenKind::DoubleQuote => return expansions,
-            TokenKind::Dollar => match parse_expansion(tok, ctx) {
-                Ok(None) => {}
-                Ok(Some(expansion)) => expansions.push(expansion),
-                Err(diagnostic) => ctx.info.diagnostics.push(diagnostic),
-            },
+fn parse_string(ctx: &mut Context, quote: Token) {
+    while let Some(token) = ctx.lexer.next() {
+        match token.kind {
+            TokenKind::DoubleQuote => return,
+            TokenKind::Dollar => {
+                if let Err(diagnostic) = parse_expansion(token, ctx) {
+                    ctx.info.diagnostics.push(diagnostic);
+                }
+            }
             _ => continue,
         }
     }
     ctx.info.diagnostics.push(lsp::Diagnostic::error(quote.range, "Unterminated string"));
-    expansions
 }
 
-fn extract_conditional(ctx: &mut Context) -> ParseResult<ast::Statement> {
-    let condition = Box::new(extract_statement(ctx)?);
-    ctx.require_keyword("then")?;
-    let true_branch = extract_statements_until(ctx, |tok| is_keyword(tok, &["fi", "elif", "else"]));
-    let false_branch = if parse_keyword(ctx, "else") {
-        Some(extract_statements_until(ctx, |tok| is_keyword(tok, &["fi"])))
+fn extract_conditional(ctx: &mut Context) -> ParseResult<()> {
+    extract_statement(ctx)?;
+    ctx.expect_word("then")?;
+    extract_statements_until(ctx, |token| is_keyword(ctx.document, token, &["fi", "elif", "else"]));
+    if parse_keyword(ctx, "else") {
+        extract_statements_until(ctx, |token| is_keyword(ctx.document, token, &["fi"]));
     }
-    else {
-        None
-    };
-    ctx.require_keyword("fi")?;
-    Ok(ast::Statement::Conditional { condition, true_branch, false_branch })
+    ctx.expect_word("fi")?;
+    Ok(())
 }
 
-fn extract_loop_body(ctx: &mut Context) -> ParseResult<Vec<ast::Statement>> {
-    ctx.require_keyword("do")?;
-    let body = extract_statements_until(ctx, |tok| is_keyword(tok, &["done"]));
-    ctx.require_keyword("done")?;
-    Ok(body)
+fn extract_loop_body(ctx: &mut Context) -> ParseResult<()> {
+    ctx.expect_word("do")?;
+    extract_statements_until(ctx, |token| is_keyword(ctx.document, token, &["done"]));
+    ctx.expect_word("done")?;
+    Ok(())
 }
 
-fn extract_for_loop(ctx: &mut Context) -> ParseResult<ast::Statement> {
-    let variable = ctx.require_token_kind(TokenKind::Word).map(identifier)?;
-    ctx.info.add_variable_write(variable.clone());
-    ctx.skip_whitespace();
-    ctx.require_keyword("in")?;
-    ctx.skip_whitespace();
-    let values = extract_arguments_until(ctx, is_statement_end);
-    if values.is_empty() {
-        let diagnostic = ctx.expected("an iterable value");
-        ctx.info.diagnostics.push(diagnostic);
-    }
-    ctx.require_statement_end()?;
-    Ok(ast::Statement::ForLoop { variable, values, body: extract_loop_body(ctx)? })
+fn extract_for_loop(ctx: &mut Context) -> ParseResult<()> {
+    let variable = ctx.expect(TokenKind::Word).map(|token| identifier(ctx.document, token))?;
+    ctx.info.add_variable_write(variable);
+    skip_whitespace(ctx);
+    ctx.expect_word("in")?;
+    skip_whitespace(ctx);
+    extract_arguments_until(ctx, is_statement_end);
+    expect_statement_end(ctx)?;
+    extract_loop_body(ctx)?;
+    Ok(())
 }
 
-fn extract_while_loop(ctx: &mut Context) -> ParseResult<ast::Statement> {
-    let condition = Box::new(extract_statement(ctx)?);
-    let body = extract_loop_body(ctx)?;
-    Ok(ast::Statement::WhileLoop { condition, body })
+fn extract_while_loop(ctx: &mut Context) -> ParseResult<()> {
+    extract_statement(ctx)?;
+    extract_loop_body(ctx)?;
+    Ok(())
 }
 
-fn extract_function(ctx: &mut Context, id: ast::Identifier) -> ParseResult<ast::Statement> {
-    ctx.skip_whitespace();
-    ctx.require_token_kind(TokenKind::ParenClose)?;
-    ctx.skip_empty_lines();
-    ctx.require_token_kind(TokenKind::BraceOpen)?;
-    ctx.skip_empty_lines();
-    ctx.info.add_function_definition(id.clone());
-    let body = extract_statements_until(ctx, |tok| tok.kind == TokenKind::BraceClose);
-    ctx.require_token_kind(TokenKind::BraceClose)?;
-    Ok(ast::Statement::FunctionDefinition { id, body })
+fn extract_function(ctx: &mut Context, id: db::Identifier) -> ParseResult<()> {
+    skip_whitespace(ctx);
+    ctx.expect(TokenKind::ParenClose)?;
+    skip_empty_lines(ctx);
+    ctx.expect(TokenKind::BraceOpen)?;
+    skip_empty_lines(ctx);
+    ctx.info.add_function_definition(id);
+    extract_statements_until(ctx, |token| token.kind == TokenKind::BraceClose);
+    ctx.expect(TokenKind::BraceClose)?;
+    Ok(())
 }
 
 fn extract_line_command(
     ctx: &mut Context,
-    id: ast::Identifier,
-    end: impl Fn(&Token) -> bool,
-) -> ParseResult<ast::Statement> {
-    if ctx.tokens.next_if_kind(TokenKind::Equals).is_some() {
-        let value = parse_value(ctx)?.unwrap_or_else(|| ast::Value::RawString(String::new()));
-        let assignment = ast::Assignment { id: id.clone(), value };
-        ctx.skip_whitespace();
-        if ctx.tokens.peek().is_none_or(&end) {
+    id: db::Identifier,
+    end: impl Fn(Token) -> bool,
+) -> ParseResult<()> {
+    if ctx.consume(TokenKind::Equals) {
+        parse_value(ctx)?;
+        skip_whitespace(ctx);
+        if ctx.lexer.peek().is_none_or(&end) {
             ctx.info.add_variable_write(id);
-            Ok(ast::Statement::VariableAssignment(assignment))
         }
         else {
-            let id = identifier(ctx.require_token_kind(TokenKind::Word)?);
-            ctx.skip_whitespace();
-            let statement = Box::new(extract_line_command(ctx, id, end)?);
-            Ok(ast::Statement::ScopedAssignment { assignment, statement })
+            let word = ctx.expect(TokenKind::Word)?;
+            skip_whitespace(ctx);
+            extract_line_command(ctx, identifier(ctx.document, word), end)?;
         }
     }
     else {
-        ctx.info.add_command_reference(id.clone());
-        Ok(ast::Statement::Command {
-            name: ast::Value::Word(id.name),
-            arguments: extract_arguments_until(ctx, end),
-        })
+        ctx.info.add_command_reference(id);
+        extract_arguments_until(ctx, end);
     }
+    Ok(())
 }
 
 fn extract_command(
     ctx: &mut Context,
-    id: ast::Identifier,
-    end: impl Fn(&Token) -> bool,
-) -> ParseResult<ast::Statement> {
-    ctx.skip_whitespace();
+    id: db::Identifier,
+    end: impl Fn(Token) -> bool,
+) -> ParseResult<()> {
+    skip_whitespace(ctx);
     match id.name.as_str() {
         "if" => extract_conditional(ctx),
         "for" => extract_for_loop(ctx),
         "while" => extract_while_loop(ctx),
         _ => {
-            if ctx.tokens.next_if_kind(TokenKind::ParenOpen).is_some() {
+            if ctx.consume(TokenKind::ParenOpen) {
                 extract_function(ctx, id)
             }
             else {
@@ -293,164 +275,92 @@ fn extract_command(
 }
 
 fn skip_to_next_recovery_point(ctx: &mut Context) {
-    for tok in ctx.tokens.by_ref() {
-        if is_statement_end(&tok) {
+    for token in ctx.lexer.by_ref() {
+        if is_statement_end(token) {
             break;
         }
     }
 }
 
-fn extract_statement_up_to(
-    ctx: &mut Context,
-    end: impl Fn(&Token) -> bool,
-) -> ParseResult<ast::Statement> {
-    ctx.skip_empty_lines();
-    let tok = ctx.require_token()?;
-    if tok.kind == TokenKind::Word {
-        extract_command(ctx, identifier(tok), end)
-    }
-    else {
-        Err(ctx.expected("a statement"))
-    }
+fn extract_statement_up_to(ctx: &mut Context, end: impl Fn(Token) -> bool) -> ParseResult<()> {
+    skip_empty_lines(ctx);
+    let token = ctx.expect(TokenKind::Word)?;
+    extract_command(ctx, identifier(ctx.document, token), end)
 }
 
-fn extract_statement(ctx: &mut Context) -> ParseResult<ast::Statement> {
-    let statement = extract_statement_up_to(ctx, is_statement_end)?;
-    ctx.require_statement_end()?;
-    ctx.skip_empty_lines();
-    Ok(statement)
+fn extract_statement(ctx: &mut Context) -> ParseResult<()> {
+    extract_statement_up_to(ctx, is_statement_end)?;
+    expect_statement_end(ctx)?;
+    skip_empty_lines(ctx);
+    Ok(())
 }
 
-fn extract_statements_until(ctx: &mut Context, f: impl Fn(&Token) -> bool) -> Vec<ast::Statement> {
-    let mut statements = Vec::new();
-    while !ctx.tokens.peek().is_none_or(&f) {
-        match extract_statement(ctx) {
-            Ok(statement) => {
-                statements.push(statement);
-            }
-            Err(diagnostic) => {
-                ctx.info.diagnostics.push(diagnostic);
-                skip_to_next_recovery_point(ctx);
-            }
+fn extract_statements_until(ctx: &mut Context, f: impl Fn(Token) -> bool) {
+    while !ctx.lexer.peek().is_none_or(&f) {
+        if let Err(diagnostic) = extract_statement(ctx) {
+            ctx.info.diagnostics.push(diagnostic);
+            skip_to_next_recovery_point(ctx);
         }
     }
-    statements
 }
 
 fn parse_shebang(ctx: &mut Context) {
-    if let Some(token) = ctx.tokens.peek() {
-        if token.kind == TokenKind::Comment {
-            if let Some(shebang) = token.value.as_ref().unwrap().strip_prefix('!') {
-                match shebang.parse() {
-                    Ok(Shell::Posix) => {}
-                    Ok(shell) => {
-                        let message = format!("{} is not supported yet", shell.name());
-                        ctx.info.diagnostics.push(lsp::Diagnostic::warning(token.range, message));
-                    }
-                    Err(error) => {
-                        ctx.info.diagnostics.push(lsp::Diagnostic::warning(token.range, error));
-                    }
+    if let Some(comment) = ctx.lexer.next_if_kind(TokenKind::Comment) {
+        if let Some(shebang) = comment.view.string(ctx.document).strip_prefix("#!") {
+            match shebang.parse() {
+                Ok(Shell::Posix) => {}
+                Ok(shell) => {
+                    let message = format!("{} is not supported yet", shell.name());
+                    ctx.info.diagnostics.push(lsp::Diagnostic::warning(comment.range, message));
                 }
-                ctx.tokens.next();
+                Err(error) => {
+                    ctx.info.diagnostics.push(lsp::Diagnostic::warning(comment.range, error));
+                }
             }
         }
     }
 }
 
-pub struct ParseData {
-    pub program: Vec<ast::Statement>,
-    pub info: db::DocumentInfo,
-}
-
-pub fn parse(input: &str) -> ParseData {
+pub fn parse(input: &str) -> db::DocumentInfo {
     let mut ctx = Context::new(input);
     parse_shebang(&mut ctx);
-    ctx.skip_empty_lines();
-    let program = extract_statements_until(&mut ctx, |_| false);
-    ParseData { program, info: ctx.info }
+    skip_empty_lines(&mut ctx);
+    extract_statements_until(&mut ctx, |_| false);
+    ctx.info
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::assert_let;
 
-    fn word(word: impl Into<String>) -> ast::Value {
-        ast::Value::Word(word.into())
-    }
-    fn identifier(name: impl Into<String>) -> ast::Identifier {
-        ast::Identifier { name: name.into(), range: lsp::Range::default() }
-    }
-    fn command(name: &str, arguments: Vec<ast::Value>) -> ast::Statement {
-        ast::Statement::Command { name: word(name), arguments: arguments.to_vec() }
-    }
-
-    fn parse_statements(input: &str) -> Vec<ast::Statement> {
-        let result = parse(input);
-        if result.info.diagnostics.is_empty() {
-            result.program
-        }
-        else {
-            dbg!(result.info.diagnostics);
-            panic!()
-        }
+    fn diagnostics(input: &str) -> Vec<String> {
+        super::parse(input).diagnostics.into_iter().map(|diagnostic| diagnostic.message).collect()
     }
 
     #[test]
     fn conditional() {
-        assert_eq!(
-            parse_statements("if ls -la; then\n\tpwd\n\tuname -a\nfi\n"),
-            vec![ast::Statement::Conditional {
-                condition: Box::new(command("ls", vec![word("-la")])),
-                true_branch: vec![command("pwd", vec![]), command("uname", vec![word("-a")])],
-                false_branch: None,
-            }]
-        );
+        assert_let!([] = diagnostics("if ls -la; then\n\tpwd\n\tuname -a\nfi\n").as_slice());
     }
 
     #[test]
     fn for_loop() {
-        assert_eq!(
-            parse_statements("for x in a b c\ndo\n\techo $x\ndone\n"),
-            vec![ast::Statement::ForLoop {
-                variable: identifier("x"),
-                values: vec![word("a"), word("b"), word("c")],
-                body: vec![command(
-                    "echo",
-                    vec![ast::Value::Expansion(ast::Expansion::Simple(identifier(
-                        "x"
-                    )))]
-                )],
-            }]
-        );
+        assert_let!([] = diagnostics("for x in a b c\ndo\n\techo $x\ndone\n").as_slice());
     }
 
     #[test]
     fn while_loop() {
-        assert_eq!(
-            parse_statements("while true; do echo $x; done\n"),
-            vec![ast::Statement::WhileLoop {
-                condition: Box::new(command("true", vec![])),
-                body: vec![command(
-                    "echo",
-                    vec![ast::Value::Expansion(ast::Expansion::Simple(identifier(
-                        "x"
-                    )))]
-                )],
-            }]
-        );
+        assert_let!([] = diagnostics("while true; do echo $x; done\n").as_slice());
     }
 
     #[test]
     fn assignment() {
-        assert_eq!(
-            parse_statements("a=b c=d e f\n"),
-            vec![ast::Statement::ScopedAssignment {
-                assignment: ast::Assignment { id: identifier("a"), value: word("b") },
-                statement: Box::new(ast::Statement::ScopedAssignment {
-                    assignment: ast::Assignment { id: identifier("c"), value: word("d") },
-                    statement: Box::new(command("e", vec![word("f")])),
-                })
-            }]
-        );
+        assert_let!([] = diagnostics("a=b c=d e f\n").as_slice());
+    }
+
+    #[test]
+    fn dollar() {
+        let messages = diagnostics("echo $\n");
+        assert_let!([message] = messages.as_slice());
+        assert!(message.contains("literal"));
     }
 }

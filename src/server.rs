@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 type Json = serde_json::Value;
 
 #[derive(Default)]
-pub struct Server {
+struct Server {
     pub db: db::Database,
     pub initialized: bool,
     pub exit_code: Option<i32>,
@@ -94,11 +94,11 @@ fn determine_completion_kind(
     cursor: lsp::Position,
 ) -> (usize, lsp::CompletionItemKind) {
     for (index, char) in prefix.chars().rev().enumerate() {
-        if char == '$' {
-            return (cursor.column as usize - index, lsp::CompletionItemKind::Variable);
+        if "${".contains(char) {
+            return (cursor.character as usize - index, lsp::CompletionItemKind::Variable);
         }
         else if !is_word(char) {
-            return (cursor.column as usize - index, lsp::CompletionItemKind::Function);
+            return (cursor.character as usize - index, lsp::CompletionItemKind::Function);
         }
     }
     (0, lsp::CompletionItemKind::Function)
@@ -116,7 +116,7 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
     match method {
         "initialize" => {
             if std::mem::replace(&mut server.initialized, true) {
-                eprintln!("Received initialize request when initialized");
+                eprintln!("[debug] Received initialize request when initialized");
             }
             Ok(json!({
                 "capabilities": server_capabilities(),
@@ -125,7 +125,7 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
         }
         "shutdown" => {
             if !std::mem::replace(&mut server.initialized, false) {
-                eprintln!("Received uninitialize request when uninitialized");
+                eprintln!("[debug] Received uninitialize request when uninitialized");
             }
             Ok(Json::Null)
         }
@@ -168,10 +168,10 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
             let params: lsp::PositionParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
             let line = get_line(document, params.position.line)?;
-            let line_prefix = &line[..params.position.column as usize];
+            let line_prefix = &line[..params.position.character as usize];
             let (offset, kind) = determine_completion_kind(line_prefix, params.position);
             let prefix = &line_prefix[offset..];
-            let start = lsp::Position { line: params.position.line, column: offset as u32 };
+            let start = lsp::Position { line: params.position.line, character: offset as u32 };
             let range = lsp::Range { start, end: params.position };
             match kind {
                 lsp::CompletionItemKind::Variable => Ok(Json::Array(
@@ -192,10 +192,7 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
                 _ => Err(rpc::Error::new(rpc::ErrorCode::InternalError, "completion failure")),
             }
         }
-        _ => Err(rpc::Error::new(
-            rpc::ErrorCode::MethodNotFound,
-            format!("Unhandled request: {method}"),
-        )),
+        _ => Err(rpc::Error::method_not_found(method)),
     }
 }
 
@@ -231,10 +228,7 @@ fn handle_notification(server: &mut Server, method: &str, params: Json) -> Resul
             document.analyze();
             Ok(())
         }
-        _ => Err(rpc::Error::new(
-            rpc::ErrorCode::MethodNotFound,
-            format!("Unhandled notification: {method}"),
-        )),
+        _ => Err(rpc::Error::method_not_found(method)),
     }
 }
 

@@ -10,8 +10,7 @@ pub struct DocumentURI {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Debug, Serialize, Deserialize)]
 pub struct Position {
     pub line: u32,
-    #[serde(rename = "character")]
-    pub column: u32,
+    pub character: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Serialize, Deserialize)]
@@ -174,17 +173,20 @@ impl Position {
     pub fn advance(&mut self, char: char) {
         if char == '\n' {
             self.line += 1;
-            self.column = 0;
+            self.character = 0;
         }
         else {
-            self.column += 1;
+            self.character += 1;
         }
     }
 }
 
 impl Range {
-    pub fn for_position(start: Position) -> Range {
-        Range { start, end: Position { column: start.column + 1, ..start } }
+    pub fn new(start: Position, end: Position) -> Self {
+        Self { start, end }
+    }
+    pub fn for_position(start: Position) -> Self {
+        Self { start, end: Position { character: start.character + 1, ..start } }
     }
     pub fn contains(self, position: Position) -> bool {
         self.start <= position && position < self.end // End is exclusive
@@ -192,26 +194,26 @@ impl Range {
 }
 
 impl Reference {
-    pub fn read(range: Range) -> Reference {
-        Reference { range, kind: ReferenceKind::Read }
+    pub fn read(range: Range) -> Self {
+        Self { range, kind: ReferenceKind::Read }
     }
-    pub fn write(range: Range) -> Reference {
-        Reference { range, kind: ReferenceKind::Write }
+    pub fn write(range: Range) -> Self {
+        Self { range, kind: ReferenceKind::Write }
     }
 }
 
 impl Diagnostic {
-    pub fn new(range: Range, severity: Severity, message: String) -> Diagnostic {
-        Diagnostic { range, severity, message, related: Vec::new() }
+    pub fn new(range: Range, severity: Severity, message: String) -> Self {
+        Self { range, severity, message, related: Vec::new() }
     }
-    pub fn error(range: Range, message: impl Into<String>) -> Diagnostic {
-        Diagnostic::new(range, Severity::Error, message.into())
+    pub fn error(range: Range, message: impl Into<String>) -> Self {
+        Self::new(range, Severity::Error, message.into())
     }
-    pub fn warning(range: Range, message: impl Into<String>) -> Diagnostic {
-        Diagnostic::new(range, Severity::Warning, message.into())
+    pub fn warning(range: Range, message: impl Into<String>) -> Self {
+        Self::new(range, Severity::Warning, message.into())
     }
-    pub fn info(range: Range, message: impl Into<String>) -> Diagnostic {
-        Diagnostic::new(range, Severity::Information, message.into())
+    pub fn info(range: Range, message: impl Into<String>) -> Self {
+        Self::new(range, Severity::Information, message.into())
     }
 }
 

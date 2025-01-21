@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct JsonRpc;
@@ -48,7 +48,9 @@ impl JsonRpc {
     pub const VERSION: &str = "2.0";
 }
 
-impl<'de> serde::de::Visitor<'de> for JsonRpc {
+struct JsonRpcVisitor;
+
+impl<'de> serde::de::Visitor<'de> for JsonRpcVisitor {
     type Value = JsonRpc;
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         formatter.write_str(JsonRpc::VERSION)
@@ -58,15 +60,15 @@ impl<'de> serde::de::Visitor<'de> for JsonRpc {
     }
 }
 
-impl Serialize for JsonRpc {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(JsonRpc::VERSION)
+impl<'de> Deserialize<'de> for JsonRpc {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<JsonRpc, D::Error> {
+        d.deserialize_str(JsonRpcVisitor)
     }
 }
 
-impl<'de> Deserialize<'de> for JsonRpc {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<JsonRpc, D::Error> {
-        d.deserialize_str(JsonRpc)
+impl Serialize for JsonRpc {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(JsonRpc::VERSION)
     }
 }
 
@@ -74,13 +76,13 @@ fn consume(input: &mut impl Read, bytes: usize) -> bool {
     input.bytes().take(bytes).count() == bytes
 }
 
-pub fn write_message(output: &mut impl Write, content: &str) -> std::io::Result<()> {
-    write!(output, "Content-Length: {}\r\n\r\n{}", content.len(), content)
-        .and_then(|()| output.flush())
+pub fn write_message(output: &mut impl Write, content: &str) -> io::Result<()> {
+    write!(output, "Content-Length: {}\r\n\r\n{}", content.len(), content)?;
+    output.flush()
 }
 
-pub fn read_message(input: &mut impl Read) -> std::io::Result<String> {
-    let error = |msg| Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, msg));
+pub fn read_message(input: &mut impl Read) -> io::Result<String> {
+    let error = |msg| Err(io::Error::new(io::ErrorKind::InvalidInput, msg));
 
     if !consume(input, "Content-Length: ".len()) {
         return error("Missing Content-Length header.");
@@ -109,14 +111,14 @@ pub fn read_message(input: &mut impl Read) -> std::io::Result<String> {
     }
 
     let mut content = Vec::with_capacity(length);
-    input.take(length as u64).read_to_end(&mut content).and_then(|read| {
-        if length == read {
-            Ok(String::from_utf8_lossy(&content).into_owned())
-        }
-        else {
-            error("Premature end of input.")
-        }
-    })
+    let read = input.take(length as u64).read_to_end(&mut content)?;
+
+    if length == read {
+        Ok(String::from_utf8_lossy(&content).into_owned())
+    }
+    else {
+        error("Premature end of input.")
+    }
 }
 
 impl From<serde_json::Error> for Error {
@@ -131,6 +133,9 @@ impl Error {
     }
     pub fn invalid_params(message: impl Into<String>) -> Error {
         Error::new(ErrorCode::InvalidParams, message)
+    }
+    pub fn method_not_found(method: &str) -> Error {
+        Error::new(ErrorCode::MethodNotFound, format!("Unhandled method: {method}"))
     }
 }
 

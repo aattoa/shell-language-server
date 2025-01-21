@@ -1,6 +1,5 @@
-#![allow(dead_code)]
+#![allow(unused_parens, dead_code)]
 
-mod ast;
 mod config;
 mod db;
 mod env;
@@ -11,6 +10,7 @@ mod poschars;
 mod rpc;
 mod server;
 mod shell;
+mod util;
 
 const HELP: &str = r"Options:
   --help, -h       Display help information
