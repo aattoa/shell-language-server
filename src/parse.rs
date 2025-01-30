@@ -52,7 +52,7 @@ const END_KINDS: &[TokenKind] = {
 
 const REDIRECT_KINDS: &[TokenKind] = {
     use TokenKind::*;
-    &[Great, GreatGreat, Less, LessLess, GreatPipe]
+    &[Great, GreatGreat, Less, LessLess, GreatPipe, GreatAnd, LessAnd]
 };
 
 const CONTINUATION_KINDS: &[TokenKind] = {
@@ -82,6 +82,20 @@ fn expect_statement_end(ctx: &mut Context) -> ParseResult<()> {
     }
     else {
         Err(ctx.expected("a new line or a semicolon"))
+    }
+}
+
+fn extract_enclosed_statements(ctx: &mut Context, end: impl Copy + Fn(Token) -> bool) {
+    while !ctx.lexer.peek().is_none_or(end) {
+        skip_empty_lines(ctx);
+        if ctx.lexer.peek().is_some_and(end) {
+            break;
+        }
+        if let Err(diagnostic) = extract_statement_up_to(ctx, end) {
+            ctx.emit(diagnostic);
+            ctx.lexer.next();
+        }
+        ctx.consume(TokenKind::Semi);
     }
 }
 
@@ -124,14 +138,15 @@ fn parse_simple_value(ctx: &mut Context) -> ParseResult<bool> {
     };
     if let Some(quote) = ctx.lexer.next_if_kind(TokenKind::DoubleQuote) {
         parse_string(ctx, quote);
-        Ok(true)
     }
-    else if ctx.lexer.next_if(kind_matches(KINDS)).is_some() {
-        Ok(true)
+    else if ctx.consume(TokenKind::BackQuote) {
+        extract_enclosed_statements(ctx, kind_matches(&[TokenKind::BackQuote]));
+        ctx.expect(TokenKind::BackQuote)?;
     }
-    else {
-        parse_word(ctx)
+    else if ctx.lexer.next_if(kind_matches(KINDS)).is_none() {
+        return parse_word(ctx);
     }
+    Ok(true)
 }
 
 fn parse_value(ctx: &mut Context) -> ParseResult<bool> {
@@ -175,7 +190,7 @@ fn parse_expansion(dollar: Token, ctx: &mut Context) -> ParseResult<bool> {
         ctx.expect(TokenKind::BraceClose)?;
     }
     else if ctx.consume(TokenKind::ParenOpen) {
-        extract_statement_up_to(ctx, |token| token.kind == TokenKind::ParenClose)?;
+        extract_enclosed_statements(ctx, kind_matches(&[TokenKind::ParenClose]));
         ctx.expect(TokenKind::ParenClose)?;
     }
     else if !ctx.consume(TokenKind::Dollar) {
@@ -192,6 +207,16 @@ fn parse_string(ctx: &mut Context, quote: Token) {
             TokenKind::DoubleQuote => return,
             TokenKind::Dollar => {
                 if let Err(diagnostic) = parse_expansion(token, ctx) {
+                    ctx.emit(diagnostic);
+                }
+            }
+            TokenKind::BackQuote => {
+                extract_enclosed_statements(
+                    ctx,
+                    kind_matches(&[TokenKind::BackQuote, TokenKind::DoubleQuote]),
+                );
+                if !ctx.consume(TokenKind::BackQuote) {
+                    let diagnostic = ctx.expected("A closing backquote");
                     ctx.emit(diagnostic);
                 }
             }
@@ -223,8 +248,8 @@ fn extract_loop_body(ctx: &mut Context) -> ParseResult<()> {
 }
 
 fn extract_for_loop(ctx: &mut Context) -> ParseResult<()> {
-    let variable = ctx.expect(TokenKind::Word).map(|token| identifier(ctx.document, token))?;
-    ctx.info.add_variable_write(variable);
+    let variable = ctx.expect(TokenKind::Word)?;
+    ctx.info.add_variable_write(identifier(ctx.document, variable));
     skip_whitespace(ctx);
     ctx.expect_word("in")?;
     skip_whitespace(ctx);
@@ -264,21 +289,7 @@ fn parse_case_item(ctx: &mut Context) -> ParseResult<bool> {
         return if open { Err(ctx.expected("a pattern")) } else { Ok(false) };
     }
     ctx.expect(TokenKind::ParenClose)?;
-    skip_whitespace(ctx);
-    while !ctx.lexer.peek().is_none_or(end) {
-        skip_empty_lines(ctx);
-        if ctx.lexer.peek().is_some_and(end) {
-            break;
-        }
-        const KINDS: &[TokenKind] = {
-            use TokenKind::*;
-            &[NewLine, Semi, SemiSemi]
-        };
-        if let Err(diagnostic) = extract_statement_up_to(ctx, kind_matches(KINDS)) {
-            ctx.emit(diagnostic);
-            ctx.lexer.next();
-        }
-    }
+    extract_enclosed_statements(ctx, end);
     Ok(true)
 }
 
@@ -352,7 +363,9 @@ fn extract_statement_up_to(
     ctx: &mut Context,
     end: impl Copy + Fn(Token) -> bool,
 ) -> ParseResult<()> {
-    let end = |token| end(token) || kind_matches(CONTINUATION_KINDS)(token);
+    let end = |token| {
+        end(token) || token.kind == TokenKind::NewLine || kind_matches(CONTINUATION_KINDS)(token)
+    };
     skip_empty_lines(ctx);
     loop {
         skip_whitespace(ctx);
@@ -368,6 +381,16 @@ fn extract_statement_up_to(
         }
         else if parse_value(ctx)? {
             extract_arguments_until(ctx, end);
+        }
+        else if ctx.consume(TokenKind::ParenOpen) {
+            skip_whitespace(ctx);
+            extract_enclosed_statements(ctx, kind_matches(&[TokenKind::ParenClose]));
+            ctx.expect(TokenKind::ParenClose)?;
+        }
+        else if ctx.consume(TokenKind::BraceOpen) {
+            skip_whitespace(ctx);
+            extract_enclosed_statements(ctx, kind_matches(&[TokenKind::BraceClose]));
+            ctx.expect(TokenKind::BraceClose)?;
         }
         else {
             return Err(ctx.expected("a statement"));
