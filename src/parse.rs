@@ -35,6 +35,21 @@ impl<'a> Context<'a> {
     }
 }
 
+fn protected(ctx: &mut Context, callback: impl FnOnce(&mut Context) -> ParseResult<bool>) -> bool {
+    match callback(ctx) {
+        Ok(result) => result,
+        Err(diagnostic) => {
+            ctx.emit(diagnostic);
+            false
+        }
+    }
+}
+
+const END_KINDS: &[TokenKind] = {
+    use TokenKind::*;
+    &[NewLine, Semi]
+};
+
 const REDIRECT_KINDS: &[TokenKind] = {
     use TokenKind::*;
     &[Great, GreatGreat, Less, LessLess, GreatPipe]
@@ -45,27 +60,23 @@ const CONTINUATION_KINDS: &[TokenKind] = {
     &[And, AndAnd, Pipe, PipePipe]
 };
 
-fn kind_matches(kinds: &'static [TokenKind]) -> impl Copy + FnOnce(Token) -> bool {
+fn kind_matches(kinds: &'static [TokenKind]) -> impl Copy + Fn(Token) -> bool {
     |token| kinds.contains(&token.kind)
 }
 
-fn is_statement_end(token: Token) -> bool {
-    kind_matches(&[TokenKind::NewLine, TokenKind::Semi])(token)
-}
-
 fn skip_whitespace(ctx: &mut Context) {
-    let predicate = kind_matches(&[TokenKind::Space, TokenKind::Comment]);
-    while ctx.lexer.next_if(predicate).is_some() {}
+    const KINDS: &[TokenKind] = &[TokenKind::Space, TokenKind::Comment];
+    while ctx.lexer.next_if(kind_matches(KINDS)).is_some() {}
 }
 
 fn skip_empty_lines(ctx: &mut Context) {
-    let predicate = kind_matches(&[TokenKind::Space, TokenKind::Comment, TokenKind::NewLine]);
-    while ctx.lexer.next_if(predicate).is_some() {}
+    const KINDS: &[TokenKind] = &[TokenKind::Space, TokenKind::Comment, TokenKind::NewLine];
+    while ctx.lexer.next_if(kind_matches(KINDS)).is_some() {}
 }
 
 fn expect_statement_end(ctx: &mut Context) -> ParseResult<()> {
     skip_whitespace(ctx);
-    if ctx.lexer.next_if(is_statement_end).is_some() {
+    if ctx.lexer.next_if(kind_matches(END_KINDS)).is_some() {
         skip_whitespace(ctx);
         Ok(())
     }
@@ -107,15 +118,15 @@ fn parse_word(ctx: &mut Context) -> ParseResult<bool> {
 }
 
 fn parse_simple_value(ctx: &mut Context) -> ParseResult<bool> {
+    const KINDS: &[TokenKind] = {
+        use TokenKind::*;
+        &[RawString, Equal, DollarHash]
+    };
     if let Some(quote) = ctx.lexer.next_if_kind(TokenKind::DoubleQuote) {
         parse_string(ctx, quote);
         Ok(true)
     }
-    else if ctx
-        .lexer
-        .next_if(kind_matches(&[TokenKind::RawString, TokenKind::Equal, TokenKind::DollarHash]))
-        .is_some()
-    {
+    else if ctx.lexer.next_if(kind_matches(KINDS)).is_some() {
         Ok(true)
     }
     else {
@@ -136,62 +147,43 @@ fn parse_value(ctx: &mut Context) -> ParseResult<bool> {
 fn skip_redirect(ctx: &mut Context) {
     if ctx.lexer.next_if(kind_matches(REDIRECT_KINDS)).is_some() {
         skip_whitespace(ctx);
-        match parse_value(ctx) {
-            Ok(true) => {}
-            Ok(false) => {
-                let diagnostic = ctx.expected("a filename");
-                ctx.emit(diagnostic);
-            }
-            Err(diagnostic) => ctx.emit(diagnostic),
+        if !protected(ctx, parse_value) {
+            let diagnostic = ctx.expected("a filename");
+            ctx.emit(diagnostic);
         }
     }
 }
 
-fn extract_arguments_until(ctx: &mut Context, end: impl Copy + FnOnce(Token) -> bool) {
+fn extract_arguments_until(ctx: &mut Context, end: impl Copy + Fn(Token) -> bool) {
     loop {
         skip_whitespace(ctx);
         skip_redirect(ctx);
         skip_whitespace(ctx);
-        if ctx.lexer.peek().is_none_or(end) {
+        if ctx.lexer.peek().is_none_or(end) || !protected(ctx, parse_value) {
             break;
-        }
-        match parse_value(ctx) {
-            Ok(true) => {}
-            Ok(false) => {
-                let diagnostic = ctx.expected("an argument");
-                ctx.emit(diagnostic);
-                ctx.lexer.next();
-                break;
-            }
-            Err(diagnostic) => {
-                ctx.emit(diagnostic);
-                break;
-            }
         }
     }
 }
 
 fn parse_expansion(dollar: Token, ctx: &mut Context) -> ParseResult<bool> {
-    Ok(if let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
+    if let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
         ctx.info.add_variable_read(identifier(ctx.document, word));
-        true
     }
     else if ctx.consume(TokenKind::BraceOpen) {
         let name = ctx.expect(TokenKind::Word)?;
         ctx.info.add_variable_read(identifier(ctx.document, name));
         ctx.expect(TokenKind::BraceClose)?;
-        true
     }
     else if ctx.consume(TokenKind::ParenOpen) {
         extract_statement_up_to(ctx, |token| token.kind == TokenKind::ParenClose)?;
         ctx.expect(TokenKind::ParenClose)?;
-        true
     }
-    else {
+    else if !ctx.consume(TokenKind::Dollar) {
         let message = "This `$` is literal. Use `\\$` to suppress this hint.";
         ctx.emit(lsp::Diagnostic::info(dollar.range, message));
-        false
-    })
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 fn parse_string(ctx: &mut Context, quote: Token) {
@@ -212,9 +204,12 @@ fn parse_string(ctx: &mut Context, quote: Token) {
 fn extract_conditional(ctx: &mut Context) -> ParseResult<()> {
     extract_statement(ctx)?;
     ctx.expect_word("then")?;
-    extract_statements_until(ctx, |token| is_keyword(ctx.document, token, &["fi", "elif", "else"]));
+    extract_statements_until(ctx, |token| is_keyword(ctx.document, token, &["fi", "else", "elif"]));
     if parse_keyword(ctx, "else") {
         extract_statements_until(ctx, |token| is_keyword(ctx.document, token, &["fi"]));
+    }
+    if parse_keyword(ctx, "elif") {
+        return extract_conditional(ctx);
     }
     ctx.expect_word("fi")?;
     Ok(())
@@ -233,7 +228,7 @@ fn extract_for_loop(ctx: &mut Context) -> ParseResult<()> {
     skip_whitespace(ctx);
     ctx.expect_word("in")?;
     skip_whitespace(ctx);
-    extract_arguments_until(ctx, is_statement_end);
+    extract_arguments_until(ctx, kind_matches(END_KINDS));
     expect_statement_end(ctx)?;
     extract_loop_body(ctx)?;
     Ok(())
@@ -245,6 +240,65 @@ fn extract_while_loop(ctx: &mut Context) -> ParseResult<()> {
     Ok(())
 }
 
+fn parse_pattern(ctx: &mut Context) -> ParseResult<bool> {
+    skip_whitespace(ctx);
+    if parse_value(ctx)? {
+        skip_whitespace(ctx);
+        if ctx.consume(TokenKind::Pipe) { parse_pattern(ctx) } else { Ok(true) }
+    }
+    else {
+        Ok(false)
+    }
+}
+
+fn parse_case_item(ctx: &mut Context) -> ParseResult<bool> {
+    skip_empty_lines(ctx);
+    let end = |token: Token| {
+        token.kind == TokenKind::SemiSemi || is_keyword(ctx.document, token, &["esac"])
+    };
+    if ctx.lexer.peek().is_some_and(end) {
+        return Ok(false);
+    }
+    let open = ctx.consume(TokenKind::ParenOpen);
+    if !parse_pattern(ctx)? {
+        return if open { Err(ctx.expected("a pattern")) } else { Ok(false) };
+    }
+    ctx.expect(TokenKind::ParenClose)?;
+    skip_whitespace(ctx);
+    while !ctx.lexer.peek().is_none_or(end) {
+        skip_empty_lines(ctx);
+        if ctx.lexer.peek().is_some_and(end) {
+            break;
+        }
+        const KINDS: &[TokenKind] = {
+            use TokenKind::*;
+            &[NewLine, Semi, SemiSemi]
+        };
+        if let Err(diagnostic) = extract_statement_up_to(ctx, kind_matches(KINDS)) {
+            ctx.emit(diagnostic);
+            ctx.lexer.next();
+        }
+    }
+    Ok(true)
+}
+
+fn extract_case(ctx: &mut Context) -> ParseResult<()> {
+    if !parse_value(ctx)? {
+        return Err(ctx.expected("a word"));
+    }
+    skip_whitespace(ctx);
+    ctx.expect_word("in")?;
+    skip_empty_lines(ctx);
+    if !protected(ctx, parse_case_item) {
+        let diagnostic = ctx.expected("at least one pattern");
+        ctx.emit(diagnostic);
+    }
+    while ctx.consume(TokenKind::SemiSemi) && protected(ctx, parse_case_item) {}
+    skip_empty_lines(ctx);
+    ctx.expect_word("esac")?;
+    Ok(())
+}
+
 fn extract_function(ctx: &mut Context, id: db::Identifier) -> ParseResult<()> {
     skip_whitespace(ctx);
     ctx.expect(TokenKind::ParenClose)?;
@@ -252,7 +306,7 @@ fn extract_function(ctx: &mut Context, id: db::Identifier) -> ParseResult<()> {
     ctx.expect(TokenKind::BraceOpen)?;
     skip_empty_lines(ctx);
     ctx.info.add_function_definition(id);
-    extract_statements_until(ctx, |token| token.kind == TokenKind::BraceClose);
+    extract_statements_until(ctx, kind_matches(&[TokenKind::BraceClose]));
     ctx.expect(TokenKind::BraceClose)?;
     Ok(())
 }
@@ -260,7 +314,7 @@ fn extract_function(ctx: &mut Context, id: db::Identifier) -> ParseResult<()> {
 fn extract_line_command(
     ctx: &mut Context,
     id: db::Identifier,
-    end: impl Copy + FnOnce(Token) -> bool,
+    end: impl Copy + Fn(Token) -> bool,
 ) -> ParseResult<()> {
     if ctx.consume(TokenKind::Equal) {
         parse_value(ctx)?;
@@ -284,7 +338,7 @@ fn extract_line_command(
 fn extract_command(
     ctx: &mut Context,
     id: db::Identifier,
-    end: impl Copy + FnOnce(Token) -> bool,
+    end: impl Copy + Fn(Token) -> bool,
 ) -> ParseResult<()> {
     if ctx.consume(TokenKind::ParenOpen) {
         extract_function(ctx, id)
@@ -296,7 +350,7 @@ fn extract_command(
 
 fn extract_statement_up_to(
     ctx: &mut Context,
-    end: impl Copy + FnOnce(Token) -> bool,
+    end: impl Copy + Fn(Token) -> bool,
 ) -> ParseResult<()> {
     let end = |token| end(token) || kind_matches(CONTINUATION_KINDS)(token);
     skip_empty_lines(ctx);
@@ -308,6 +362,7 @@ fn extract_statement_up_to(
                 "if" => extract_conditional(ctx)?,
                 "for" => extract_for_loop(ctx)?,
                 "while" => extract_while_loop(ctx)?,
+                "case" => extract_case(ctx)?,
                 _ => extract_command(ctx, identifier(ctx.document, word), end)?,
             }
         }
@@ -324,12 +379,8 @@ fn extract_statement_up_to(
 }
 
 fn extract_statement(ctx: &mut Context) -> ParseResult<()> {
-    const KINDS: &[TokenKind] = {
-        use TokenKind::*;
-        &[NewLine, Semi, Pipe, PipePipe, And, AndAnd, Less, LessLess, Great, GreatGreat]
-    };
     skip_whitespace(ctx);
-    extract_statement_up_to(ctx, kind_matches(KINDS))?;
+    extract_statement_up_to(ctx, kind_matches(END_KINDS))?;
     skip_whitespace(ctx);
     expect_statement_end(ctx)?;
     skip_whitespace(ctx);
@@ -337,7 +388,7 @@ fn extract_statement(ctx: &mut Context) -> ParseResult<()> {
     Ok(())
 }
 
-fn extract_statements_until(ctx: &mut Context, predicate: impl Copy + FnOnce(Token) -> bool) {
+fn extract_statements_until(ctx: &mut Context, predicate: impl Copy + Fn(Token) -> bool) {
     while !ctx.lexer.peek().is_none_or(predicate) {
         if let Err(diagnostic) = extract_statement(ctx) {
             ctx.emit(diagnostic);
@@ -347,8 +398,9 @@ fn extract_statements_until(ctx: &mut Context, predicate: impl Copy + FnOnce(Tok
 }
 
 fn skip_to_next_recovery_point(ctx: &mut Context) {
+    let predicate = kind_matches(END_KINDS);
     for token in ctx.lexer.by_ref() {
-        if is_statement_end(token) {
+        if predicate(token) {
             break;
         }
     }
@@ -385,8 +437,8 @@ pub fn parse(input: &str) -> db::DocumentInfo {
 mod tests {
     use crate::assert_let;
 
-    fn diagnostics(input: &str) -> Vec<String> {
-        super::parse(input).diagnostics.into_iter().map(|diagnostic| diagnostic.message).collect()
+    fn diagnostics(input: &str) -> Vec<super::lsp::Diagnostic> {
+        super::parse(input).diagnostics
     }
 
     #[test]
@@ -411,8 +463,8 @@ mod tests {
 
     #[test]
     fn dollar() {
-        let messages = diagnostics("echo $\n");
-        assert_let!([message] = messages.as_slice());
-        assert!(message.contains("literal"));
+        let diags = diagnostics("echo $\n");
+        assert_let!([diag] = diags.as_slice());
+        assert!(diag.message.contains("literal"));
     }
 }
