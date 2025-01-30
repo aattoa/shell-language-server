@@ -21,7 +21,7 @@ pub enum TokenKind {
     GreatGreat,   // >>
     GreatAnd,     // >&
     GreatPipe,    // >|
-    Equals,       // =
+    Equal,        // =
     Dollar,       // $
     DollarHash,   // $#
     Pipe,         // |
@@ -92,7 +92,7 @@ fn next_token(char: char, chars: &mut PosChars) -> TokenKind {
         ')' => TokenKind::ParenClose,
         '{' => TokenKind::BraceOpen,
         '}' => TokenKind::BraceClose,
-        '=' => TokenKind::Equals,
+        '=' => TokenKind::Equal,
 
         '<' => {
             if chars.consume('<') {
@@ -145,7 +145,7 @@ fn lex(lexer: &mut Lexer) -> Option<Token> {
     })
 }
 
-impl<'a> Iterator for Lexer<'a> {
+impl Iterator for Lexer<'_> {
     type Item = Token;
 
     fn next(&mut self) -> Option<Token> {
@@ -209,7 +209,7 @@ impl TokenKind {
             TokenKind::GreatAnd => "'>&'",
             TokenKind::LessGreat => "'<>'",
             TokenKind::GreatPipe => "'>|'",
-            TokenKind::Equals => "an equals sign",
+            TokenKind::Equal => "an equals sign",
             TokenKind::Dollar => "a dollar sign",
             TokenKind::DollarHash => "'$#'",
             TokenKind::Pipe => "a pipe",
@@ -227,15 +227,53 @@ impl TokenKind {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::TokenKind::*;
 
-    fn tokens(input: &str) -> Vec<TokenKind> {
-        Lexer::new(input).map(|token| token.kind).collect()
+    fn tokens(input: &str) -> Vec<super::TokenKind> {
+        super::Lexer::new(input).map(|token| token.kind).collect()
     }
 
     #[test]
     fn basics() {
-        assert_eq!(tokens("hello$world"), [TokenKind::Word, TokenKind::Dollar, TokenKind::Word]);
-        assert_eq!(tokens("hello\\$world"), [TokenKind::Word]);
+        assert_eq!(tokens("hello$world"), [Word, Dollar, Word]);
+        assert_eq!(tokens("hello\\$world"), [Word]);
+    }
+
+    #[test]
+    fn operators() {
+        assert_eq!(tokens("< << <<- <& > >> >& <> >|"), [
+            Less,
+            Space,
+            LessLess,
+            Space,
+            LessLessDash,
+            Space,
+            LessAnd,
+            Space,
+            Great,
+            Space,
+            GreatGreat,
+            Space,
+            GreatAnd,
+            Space,
+            LessGreat,
+            Space,
+            GreatPipe,
+        ]);
+    }
+
+    #[test]
+    fn punctuation() {
+        assert_eq!(tokens("| || & && ; ;;"), [
+            Pipe, Space, PipePipe, Space, And, Space, AndAnd, Space, Semi, Space, SemiSemi
+        ]);
+    }
+
+    #[test]
+    fn escape() {
+        assert_eq!(super::escape("hello"), "hello");
+        assert_eq!(super::escape("he\\llo"), "hello");
+        assert_eq!(super::escape("he\\\\llo"), "he\\llo");
+        assert_eq!(super::escape("\\h\\e\\l\\l\\o"), "hello");
     }
 }

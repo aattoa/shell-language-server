@@ -30,14 +30,27 @@ impl<'a> Context<'a> {
     fn consume(&mut self, kind: TokenKind) -> bool {
         self.lexer.next_if_kind(kind).is_some()
     }
+    fn emit(&mut self, diagnostic: lsp::Diagnostic) {
+        self.info.diagnostics.push(diagnostic);
+    }
 }
 
-fn kind_matches(kinds: &'static [TokenKind]) -> impl Fn(Token) -> bool + Copy {
+const REDIRECT_KINDS: &[TokenKind] = {
+    use TokenKind::*;
+    &[Great, GreatGreat, Less, LessLess, GreatPipe]
+};
+
+const CONTINUATION_KINDS: &[TokenKind] = {
+    use TokenKind::*;
+    &[And, AndAnd, Pipe, PipePipe]
+};
+
+fn kind_matches(kinds: &'static [TokenKind]) -> impl Copy + FnOnce(Token) -> bool {
     |token| kinds.contains(&token.kind)
 }
 
 fn is_statement_end(token: Token) -> bool {
-    kind_matches(&[TokenKind::Semi, TokenKind::NewLine])(token)
+    kind_matches(&[TokenKind::NewLine, TokenKind::Semi])(token)
 }
 
 fn skip_whitespace(ctx: &mut Context) {
@@ -70,15 +83,14 @@ fn identifier(document: &str, token: Token) -> db::Identifier {
 }
 
 fn parse_keyword(ctx: &mut Context, keyword: &str) -> bool {
-    ctx.lexer
-        .next_if(|token| {
-            token.kind == TokenKind::Word && token.view.string(ctx.document) == keyword
-        })
-        .is_some()
+    let predicate =
+        |token: Token| token.kind == TokenKind::Word && token.view.string(ctx.document) == keyword;
+    ctx.lexer.next_if(predicate).is_some()
 }
 
 fn parse_dollar(dollar: Token, ctx: &mut Context) -> ParseResult<()> {
-    parse_expansion(dollar, ctx).map(|_| ())
+    parse_expansion(dollar, ctx)?;
+    Ok(())
 }
 
 fn parse_word(ctx: &mut Context) -> ParseResult<bool> {
@@ -101,11 +113,7 @@ fn parse_simple_value(ctx: &mut Context) -> ParseResult<bool> {
     }
     else if ctx
         .lexer
-        .next_if(kind_matches(&[
-            TokenKind::RawString,
-            TokenKind::Equals,
-            TokenKind::DollarHash,
-        ]))
+        .next_if(kind_matches(&[TokenKind::RawString, TokenKind::Equal, TokenKind::DollarHash]))
         .is_some()
     {
         Ok(true)
@@ -125,18 +133,38 @@ fn parse_value(ctx: &mut Context) -> ParseResult<bool> {
     })
 }
 
-fn extract_arguments_until(ctx: &mut Context, pred: impl Fn(Token) -> bool) {
-    while !ctx.lexer.peek().is_none_or(&pred) {
+fn skip_redirect(ctx: &mut Context) {
+    if ctx.lexer.next_if(kind_matches(REDIRECT_KINDS)).is_some() {
+        skip_whitespace(ctx);
         match parse_value(ctx) {
-            Ok(true) => skip_whitespace(ctx),
+            Ok(true) => {}
+            Ok(false) => {
+                let diagnostic = ctx.expected("a filename");
+                ctx.emit(diagnostic);
+            }
+            Err(diagnostic) => ctx.emit(diagnostic),
+        }
+    }
+}
+
+fn extract_arguments_until(ctx: &mut Context, end: impl Copy + FnOnce(Token) -> bool) {
+    loop {
+        skip_whitespace(ctx);
+        skip_redirect(ctx);
+        skip_whitespace(ctx);
+        if ctx.lexer.peek().is_none_or(end) {
+            break;
+        }
+        match parse_value(ctx) {
+            Ok(true) => {}
             Ok(false) => {
                 let diagnostic = ctx.expected("an argument");
-                ctx.info.diagnostics.push(diagnostic);
+                ctx.emit(diagnostic);
                 ctx.lexer.next();
                 break;
             }
             Err(diagnostic) => {
-                ctx.info.diagnostics.push(diagnostic);
+                ctx.emit(diagnostic);
                 break;
             }
         }
@@ -161,7 +189,7 @@ fn parse_expansion(dollar: Token, ctx: &mut Context) -> ParseResult<bool> {
     }
     else {
         let message = "This `$` is literal. Use `\\$` to suppress this hint.";
-        ctx.info.diagnostics.push(lsp::Diagnostic::info(dollar.range, message));
+        ctx.emit(lsp::Diagnostic::info(dollar.range, message));
         false
     })
 }
@@ -172,13 +200,13 @@ fn parse_string(ctx: &mut Context, quote: Token) {
             TokenKind::DoubleQuote => return,
             TokenKind::Dollar => {
                 if let Err(diagnostic) = parse_expansion(token, ctx) {
-                    ctx.info.diagnostics.push(diagnostic);
+                    ctx.emit(diagnostic);
                 }
             }
             _ => continue,
         }
     }
-    ctx.info.diagnostics.push(lsp::Diagnostic::error(quote.range, "Unterminated string"));
+    ctx.emit(lsp::Diagnostic::error(quote.range, "Unterminated string"));
 }
 
 fn extract_conditional(ctx: &mut Context) -> ParseResult<()> {
@@ -232,12 +260,12 @@ fn extract_function(ctx: &mut Context, id: db::Identifier) -> ParseResult<()> {
 fn extract_line_command(
     ctx: &mut Context,
     id: db::Identifier,
-    end: impl Fn(Token) -> bool,
+    end: impl Copy + FnOnce(Token) -> bool,
 ) -> ParseResult<()> {
-    if ctx.consume(TokenKind::Equals) {
+    if ctx.consume(TokenKind::Equal) {
         parse_value(ctx)?;
         skip_whitespace(ctx);
-        if ctx.lexer.peek().is_none_or(&end) {
+        if ctx.lexer.peek().is_none_or(end) {
             ctx.info.add_variable_write(id);
         }
         else {
@@ -256,20 +284,64 @@ fn extract_line_command(
 fn extract_command(
     ctx: &mut Context,
     id: db::Identifier,
-    end: impl Fn(Token) -> bool,
+    end: impl Copy + FnOnce(Token) -> bool,
 ) -> ParseResult<()> {
+    if ctx.consume(TokenKind::ParenOpen) {
+        extract_function(ctx, id)
+    }
+    else {
+        extract_line_command(ctx, id, end)
+    }
+}
+
+fn extract_statement_up_to(
+    ctx: &mut Context,
+    end: impl Copy + FnOnce(Token) -> bool,
+) -> ParseResult<()> {
+    let end = |token| end(token) || kind_matches(CONTINUATION_KINDS)(token);
+    skip_empty_lines(ctx);
+    loop {
+        skip_whitespace(ctx);
+        if let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
+            skip_whitespace(ctx);
+            match word.view.string(ctx.document) {
+                "if" => extract_conditional(ctx)?,
+                "for" => extract_for_loop(ctx)?,
+                "while" => extract_while_loop(ctx)?,
+                _ => extract_command(ctx, identifier(ctx.document, word), end)?,
+            }
+        }
+        else if parse_value(ctx)? {
+            extract_arguments_until(ctx, end);
+        }
+        else {
+            return Err(ctx.expected("a statement"));
+        }
+        if ctx.lexer.next_if(kind_matches(CONTINUATION_KINDS)).is_none() {
+            return Ok(());
+        }
+    }
+}
+
+fn extract_statement(ctx: &mut Context) -> ParseResult<()> {
+    const KINDS: &[TokenKind] = {
+        use TokenKind::*;
+        &[NewLine, Semi, Pipe, PipePipe, And, AndAnd, Less, LessLess, Great, GreatGreat]
+    };
     skip_whitespace(ctx);
-    match id.name.as_str() {
-        "if" => extract_conditional(ctx),
-        "for" => extract_for_loop(ctx),
-        "while" => extract_while_loop(ctx),
-        _ => {
-            if ctx.consume(TokenKind::ParenOpen) {
-                extract_function(ctx, id)
-            }
-            else {
-                extract_line_command(ctx, id, end)
-            }
+    extract_statement_up_to(ctx, kind_matches(KINDS))?;
+    skip_whitespace(ctx);
+    expect_statement_end(ctx)?;
+    skip_whitespace(ctx);
+    skip_empty_lines(ctx);
+    Ok(())
+}
+
+fn extract_statements_until(ctx: &mut Context, predicate: impl Copy + FnOnce(Token) -> bool) {
+    while !ctx.lexer.peek().is_none_or(predicate) {
+        if let Err(diagnostic) = extract_statement(ctx) {
+            ctx.emit(diagnostic);
+            skip_to_next_recovery_point(ctx);
         }
     }
 }
@@ -282,40 +354,20 @@ fn skip_to_next_recovery_point(ctx: &mut Context) {
     }
 }
 
-fn extract_statement_up_to(ctx: &mut Context, end: impl Fn(Token) -> bool) -> ParseResult<()> {
-    skip_empty_lines(ctx);
-    let token = ctx.expect(TokenKind::Word)?;
-    extract_command(ctx, identifier(ctx.document, token), end)
-}
-
-fn extract_statement(ctx: &mut Context) -> ParseResult<()> {
-    extract_statement_up_to(ctx, is_statement_end)?;
-    expect_statement_end(ctx)?;
-    skip_empty_lines(ctx);
-    Ok(())
-}
-
-fn extract_statements_until(ctx: &mut Context, f: impl Fn(Token) -> bool) {
-    while !ctx.lexer.peek().is_none_or(&f) {
-        if let Err(diagnostic) = extract_statement(ctx) {
-            ctx.info.diagnostics.push(diagnostic);
-            skip_to_next_recovery_point(ctx);
-        }
+fn set_shell(ctx: &mut Context, comment: Token, shell: Shell) {
+    if shell == Shell::Posix {
+        return;
     }
+    let msg = format!("{} is not supported yet, treating as {}", shell.name(), Shell::Posix.name());
+    ctx.emit(lsp::Diagnostic::warning(comment.range, msg));
 }
 
 fn parse_shebang(ctx: &mut Context) {
     if let Some(comment) = ctx.lexer.next_if_kind(TokenKind::Comment) {
         if let Some(shebang) = comment.view.string(ctx.document).strip_prefix("#!") {
             match shebang.parse() {
-                Ok(Shell::Posix) => {}
-                Ok(shell) => {
-                    let message = format!("{} is not supported yet", shell.name());
-                    ctx.info.diagnostics.push(lsp::Diagnostic::warning(comment.range, message));
-                }
-                Err(error) => {
-                    ctx.info.diagnostics.push(lsp::Diagnostic::warning(comment.range, error));
-                }
+                Ok(shell) => set_shell(ctx, comment, shell),
+                Err(error) => ctx.emit(lsp::Diagnostic::warning(comment.range, error)),
             }
         }
     }
