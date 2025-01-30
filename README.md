@@ -1,1 +1,77 @@
-# shell-language-server
+# **shell-language-server**
+
+This is a language server for shell scripts.
+
+A language server is a program that provides "language intelligence" features to text editors and any other compatible tools (clients).
+
+It communicates with clients over `stdin`/`stdout` using the [Language Server Protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol), which is based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
+
+Note that the project is far from done, and in many cases will not work perfectly. Several shells are recognized, but they are all treated as POSIX shell for now. Despite these limitations, the language server is already useful.
+
+## Table of contents
+
+1. **[Supported features](#supported-features)**
+2. **[Planned features](#planned-features)**
+3. **[Dependencies](#external-dependencies)**
+4. **[Configuration](#configuration)**
+5. **[Build](#build)**
+6. **[Setup](#setup)**
+
+## Supported features
+
+- Go to definition
+- Find references
+- Highlight references
+- Rename variables and functions
+- Complete variable, function, and command names
+- Diagnostics reporting
+
+## Planned features
+
+- Syntax highlighting
+- Hover documentation
+- Document symbols
+- Signature help
+- Code actions (e.g. replace a command name with its absolute path)
+- Command argument completion
+- Annotations with special comments
+- Imports and exports
+
+## External dependencies
+
+- JSON serialization and deserialization: [serde](https://github.com/serde-rs/serde) + [serde_json](https://github.com/serde-rs/json)
+
+## Configuration
+
+The server can be configured with the following command line arguments:
+
+- `--no-env-path`: Do not complete commands available through `$PATH`.
+- `--no-env-vars`: Do not complete environment variable names.
+- `--no-env`: Equivalent to `--no-env-path --no-env-vars`.
+- `--debug`: Log every LSP request and response to `stderr`.
+
+## Build
+
+To build the executable, run `cargo build --release`. The executable will be placed at `target/release/shell-language-server`.
+
+## Setup
+
+These instructions assume `shell-language-server` has been installed locally and can be run without specifying its absolute path.
+
+### Neovim
+
+No plugins needed. You can customize client behavior and key bindings with the [LspAttach](https://neovim.io/doc/user/lsp.html#LspAttach) event. Place the following Lua snippet in your Neovim configuration file to automatically start `shell-language-server` when you open a shell script:
+
+```lua
+vim.api.nvim_create_autocmd('FileType', {
+    callback = function ()
+        vim.lsp.start({
+            name = 'shell-language-server',
+            cmd = { 'shell-language-server' },
+        })
+    end,
+    pattern = 'sh',
+    group = vim.api.nvim_create_augroup('shell-language-server', { clear = true }),
+    desc = 'Automatically start shell-language-server',
+})
+```
