@@ -228,7 +228,14 @@ fn handle_notification(server: &mut Server, method: &str, params: Json) -> Resul
             document.analyze();
             Ok(())
         }
-        _ => Err(rpc::Error::method_not_found(method)),
+        _ => {
+            if method.starts_with("$/") {
+                Ok(()) // Implementation dependent notifications may be ignored.
+            }
+            else {
+                Err(rpc::Error::method_not_found(method))
+            }
+        }
     }
 }
 
