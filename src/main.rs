@@ -3,6 +3,7 @@
 mod config;
 mod db;
 mod env;
+mod indexvec;
 mod lex;
 mod lsp;
 mod parse;
