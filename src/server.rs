@@ -40,29 +40,27 @@ fn get_document<'db>(
     })
 }
 
-fn search<'db>(
-    mut references: impl Iterator<Item = &'db Vec<lsp::Reference>>,
-    position: lsp::Position,
-) -> Option<&'db [lsp::Reference]> {
-    let comparator = |reference: &lsp::Reference| {
-        if reference.range.contains(position) {
-            Ordering::Equal
-        }
-        else if reference.range.start < position {
-            Ordering::Less
-        }
-        else {
-            Ordering::Greater
-        }
-    };
-    references.find(|ranges| ranges.binary_search_by(comparator).is_ok()).map(Vec::as_slice)
+fn compare_position(position: lsp::Position, range: lsp::Range) -> Ordering {
+    if range.contains(position) {
+        Ordering::Equal
+    }
+    else if range.start < position {
+        Ordering::Less
+    }
+    else {
+        Ordering::Greater
+    }
 }
 
-fn find_references(info: &db::DocumentInfo, position: lsp::Position) -> &[lsp::Reference] {
-    search(info.variables.values(), position)
-        .or_else(|| search(info.functions.values(), position))
-        .or_else(|| search(info.commands.values(), position))
-        .unwrap_or(&[])
+fn find_references(
+    info: &db::DocumentInfo,
+    position: lsp::Position,
+) -> impl Iterator<Item = lsp::Reference> + '_ {
+    info.references
+        .binary_search_by(|symbol| compare_position(position, symbol.reference.range))
+        .into_iter()
+        .flat_map(|index| info.symbols[info.references[index].id].ref_indices.iter())
+        .map(|&index| info.references[index as usize].reference)
 }
 
 fn collect_references<T>(
@@ -70,14 +68,11 @@ fn collect_references<T>(
     position: lsp::Position,
     projection: impl Fn(lsp::Reference) -> T,
 ) -> Vec<T> {
-    find_references(&document.info, position).iter().copied().map(projection).collect()
+    find_references(&document.info, position).map(projection).collect()
 }
 
 fn find_definition(info: &db::DocumentInfo, position: lsp::Position) -> Option<lsp::Reference> {
-    search(info.variables.values(), position)
-        .or_else(|| search(info.functions.values(), position))
-        .and_then(|refs| refs.iter().find(|reference| reference.kind == lsp::ReferenceKind::Write))
-        .copied()
+    find_references(info, position).find(|reference| reference.kind == lsp::ReferenceKind::Write)
 }
 
 fn get_line(document: &db::Document, line: u32) -> Result<&str, rpc::Error> {
@@ -108,8 +103,42 @@ fn completion(range: lsp::Range, name: &str, kind: lsp::CompletionItemKind) -> J
     json!({
         "label": name,
         "kind": kind,
-        "edit": { "range": range, "newText": name },
+        "textEdit": { "range": range, "newText": name },
     })
+}
+
+fn variable_completions(
+    server: &Server,
+    document: &db::Document,
+    range: lsp::Range,
+    prefix: &str,
+) -> Json {
+    (document.info.symbols.underlying.iter())
+        .filter(|symbol| symbol.kind == db::SymbolKind::Variable && symbol.name.starts_with(prefix))
+        .map(|symbol| completion(range, &symbol.name, lsp::CompletionItemKind::Variable))
+        .chain(
+            (server.db.environment_variables.iter())
+                .filter(|name| name.starts_with(prefix))
+                .map(|name| completion(range, name, lsp::CompletionItemKind::Variable)),
+        )
+        .collect()
+}
+
+fn function_completions(
+    server: &Server,
+    document: &db::Document,
+    range: lsp::Range,
+    prefix: &str,
+) -> Json {
+    (document.info.symbols.underlying.iter())
+        .filter(|symbol| symbol.kind == db::SymbolKind::Command && symbol.name.starts_with(prefix))
+        .map(|symbol| completion(range, &symbol.name, lsp::CompletionItemKind::Function))
+        .chain(
+            (server.db.path_executables.iter())
+                .filter(|name| name.starts_with(prefix))
+                .map(|name| completion(range, name, lsp::CompletionItemKind::Function)),
+        )
+        .collect()
 }
 
 fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Json, rpc::Error> {
@@ -149,8 +178,8 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
         "textDocument/prepareRename" => {
             let params: lsp::PositionParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
-            let references = find_references(&document.info, params.position);
-            Ok(references.first().map_or(Json::Null, |reference| json!(reference.range)))
+            let mut references = find_references(&document.info, params.position);
+            Ok(references.next().map_or(Json::Null, |reference| json!(reference.range)))
         }
         "textDocument/rename" => {
             let params: lsp::RenameParams = from_value(params)?;
@@ -173,22 +202,14 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
             let prefix = &line_prefix[offset..];
             let start = lsp::Position { line: params.position.line, character: offset as u32 };
             let range = lsp::Range { start, end: params.position };
+
             match kind {
-                lsp::CompletionItemKind::Variable => Ok(Json::Array(
-                    (document.info.variables.keys())
-                        .chain(server.db.environment_variables.iter())
-                        .filter(|name| name.starts_with(prefix))
-                        .map(|name| completion(range, name, lsp::CompletionItemKind::Variable))
-                        .collect(),
-                )),
-                lsp::CompletionItemKind::Function => Ok(Json::Array({
-                    (document.info.functions.keys())
-                        .chain(document.info.commands.keys())
-                        .chain(server.db.path_executables.iter())
-                        .filter(|name| name.starts_with(prefix))
-                        .map(|name| completion(range, name, lsp::CompletionItemKind::Function))
-                        .collect()
-                })),
+                lsp::CompletionItemKind::Variable => {
+                    Ok(variable_completions(server, document, range, prefix))
+                }
+                lsp::CompletionItemKind::Function => {
+                    Ok(function_completions(server, document, range, prefix))
+                }
                 _ => Err(rpc::Error::new(rpc::ErrorCode::InternalError, "completion failure")),
             }
         }
@@ -217,9 +238,7 @@ fn handle_notification(server: &mut Server, method: &str, params: Json) -> Resul
         }
         "textDocument/didChange" => {
             let params: lsp::DidChangeDocumentParams = from_value(params)?;
-            let document = server
-                .db
-                .documents
+            let document = (server.db.documents)
                 .get_mut(&params.document.identifier.uri.path)
                 .ok_or_else(|| rpc::Error::invalid_params("Can not edit unopened document"))?;
             for change in params.changes {

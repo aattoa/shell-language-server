@@ -1,13 +1,38 @@
-use crate::{lsp, parse};
+use crate::indexvec::IndexVec;
+use crate::{define_index, lsp, parse};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+define_index!(pub SymbolId as u32);
+
+#[derive(Clone, Debug)]
+pub struct Identifier {
+    pub name: String,
+    pub range: lsp::Range,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SymbolKind {
+    Variable,
+    Command,
+}
+
+pub struct Symbol {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub ref_indices: Vec<u32>,
+}
+
+pub struct SymbolReference {
+    pub reference: lsp::Reference,
+    pub id: SymbolId,
+}
 
 #[derive(Default)]
 pub struct DocumentInfo {
     pub diagnostics: Vec<lsp::Diagnostic>,
-    pub functions: HashMap<String, Vec<lsp::Reference>>,
-    pub variables: HashMap<String, Vec<lsp::Reference>>,
-    pub commands: HashMap<String, Vec<lsp::Reference>>,
+    pub references: Vec<SymbolReference>,
+    pub symbols: IndexVec<Symbol, SymbolId>,
 }
 
 pub struct Document {
@@ -20,12 +45,6 @@ pub struct Database {
     pub documents: HashMap<PathBuf, Document>,
     pub path_executables: Vec<String>,
     pub environment_variables: Vec<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct Identifier {
-    pub name: String,
-    pub range: lsp::Range,
 }
 
 fn text_range(text: &str, range: lsp::Range) -> std::ops::Range<usize> {
@@ -57,36 +76,6 @@ fn text_range(text: &str, range: lsp::Range) -> std::ops::Range<usize> {
     begin..end
 }
 
-fn add_reference(refs: &mut Vec<lsp::Reference>, new: lsp::Reference) {
-    if let Err(index) = refs.binary_search_by(|rf| rf.range.start.cmp(&new.range.start)) {
-        refs.insert(index, new);
-    }
-}
-
-impl DocumentInfo {
-    pub fn add_variable_read(&mut self, id: Identifier) {
-        add_reference(self.variables.entry(id.name).or_default(), lsp::Reference::read(id.range))
-    }
-    pub fn add_variable_write(&mut self, id: Identifier) {
-        add_reference(self.variables.entry(id.name).or_default(), lsp::Reference::write(id.range));
-    }
-    pub fn add_function_definition(&mut self, id: Identifier) {
-        let references = vec![lsp::Reference::write(id.range)];
-        if self.functions.insert(id.name, references).is_some() {
-            let message = "Function redefinition is not yet supported";
-            self.diagnostics.push(lsp::Diagnostic::warning(id.range, message));
-        }
-    }
-    pub fn add_command_reference(&mut self, id: Identifier) {
-        if let Some(references) = self.functions.get_mut(&id.name) {
-            add_reference(references, lsp::Reference::read(id.range));
-        }
-        else {
-            self.commands.entry(id.name).or_default().push(lsp::Reference::read(id.range));
-        }
-    }
-}
-
 impl Document {
     pub fn new(text: impl Into<String>) -> Self {
         Self { text: text.into(), info: DocumentInfo::default() }
@@ -96,6 +85,16 @@ impl Document {
     }
     pub fn analyze(&mut self) {
         self.info = parse::parse(&self.text);
+        self.info.references.sort_unstable_by_key(|symbol| symbol.reference.range.start);
+        for (index, symbol) in self.info.references.iter().enumerate() {
+            self.info.symbols[symbol.id].ref_indices.push(index as u32);
+        }
+    }
+}
+
+impl Symbol {
+    pub fn new(name: String, kind: SymbolKind) -> Self {
+        Self { name, kind, ref_indices: Vec::new() }
     }
 }
 

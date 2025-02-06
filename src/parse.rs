@@ -1,6 +1,7 @@
 use crate::lex::{self, Lexer, Token, TokenKind};
 use crate::shell::Shell;
 use crate::{db, lsp};
+use std::collections::HashMap;
 
 type ParseResult<T> = Result<T, lsp::Diagnostic>;
 
@@ -8,11 +9,19 @@ struct Context<'a> {
     info: db::DocumentInfo,
     lexer: Lexer<'a>,
     document: &'a str,
+    commands: HashMap<String, db::SymbolId>,
+    variables: HashMap<String, db::SymbolId>,
 }
 
 impl<'a> Context<'a> {
     fn new(document: &'a str) -> Self {
-        Self { info: db::DocumentInfo::default(), lexer: Lexer::new(document), document }
+        Self {
+            info: db::DocumentInfo::default(),
+            lexer: Lexer::new(document),
+            document,
+            commands: HashMap::new(),
+            variables: HashMap::new(),
+        }
     }
     fn error(&mut self, message: impl Into<String>) -> lsp::Diagnostic {
         lsp::Diagnostic::error(self.lexer.current_range(), message)
@@ -33,6 +42,32 @@ impl<'a> Context<'a> {
     fn emit(&mut self, diagnostic: lsp::Diagnostic) {
         self.info.diagnostics.push(diagnostic);
     }
+}
+
+fn symbol(
+    info: &mut db::DocumentInfo,
+    symbols: &mut HashMap<String, db::SymbolId>,
+    document: &str,
+    sym_kind: db::SymbolKind,
+    ref_kind: lsp::ReferenceKind,
+    word: Token,
+) {
+    let name = lex::escape(word.view.string(document));
+    let id = symbols.get(&name).copied().unwrap_or_else(|| {
+        let id = info.symbols.push(db::Symbol::new(name.clone(), sym_kind));
+        symbols.insert(name, id);
+        id
+    });
+    let reference = lsp::Reference { range: word.range, kind: ref_kind };
+    info.references.push(db::SymbolReference { reference, id });
+}
+
+fn add_var_ref(ctx: &mut Context, word: Token, kind: lsp::ReferenceKind) {
+    symbol(&mut ctx.info, &mut ctx.variables, ctx.document, db::SymbolKind::Variable, kind, word);
+}
+
+fn add_cmd_ref(ctx: &mut Context, word: Token, kind: lsp::ReferenceKind) {
+    symbol(&mut ctx.info, &mut ctx.commands, ctx.document, db::SymbolKind::Command, kind, word);
 }
 
 fn protected(ctx: &mut Context, callback: impl FnOnce(&mut Context) -> ParseResult<bool>) -> bool {
@@ -103,10 +138,6 @@ fn is_keyword(document: &str, token: Token, keywords: &[&str]) -> bool {
     token.kind == TokenKind::Word && keywords.contains(&token.view.string(document))
 }
 
-fn identifier(document: &str, token: Token) -> db::Identifier {
-    db::Identifier { name: lex::escape(token.view.string(document)), range: token.range }
-}
-
 fn parse_keyword(ctx: &mut Context, keyword: &str) -> bool {
     let predicate =
         |token: Token| token.kind == TokenKind::Word && token.view.string(ctx.document) == keyword;
@@ -160,12 +191,13 @@ fn parse_value(ctx: &mut Context) -> ParseResult<bool> {
 }
 
 fn skip_redirect(ctx: &mut Context) {
-    if ctx.lexer.next_if(kind_matches(REDIRECT_KINDS)).is_some() {
+    while ctx.lexer.next_if(kind_matches(REDIRECT_KINDS)).is_some() {
         skip_whitespace(ctx);
         if !protected(ctx, parse_value) {
             let diagnostic = ctx.expected("a filename");
             ctx.emit(diagnostic);
         }
+        skip_whitespace(ctx);
     }
 }
 
@@ -173,7 +205,6 @@ fn extract_arguments_until(ctx: &mut Context, end: impl Copy + Fn(Token) -> bool
     loop {
         skip_whitespace(ctx);
         skip_redirect(ctx);
-        skip_whitespace(ctx);
         if ctx.lexer.peek().is_none_or(end) || !protected(ctx, parse_value) {
             break;
         }
@@ -182,11 +213,11 @@ fn extract_arguments_until(ctx: &mut Context, end: impl Copy + Fn(Token) -> bool
 
 fn parse_expansion(dollar: Token, ctx: &mut Context) -> ParseResult<bool> {
     if let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
-        ctx.info.add_variable_read(identifier(ctx.document, word));
+        add_var_ref(ctx, word, lsp::ReferenceKind::Read);
     }
     else if ctx.consume(TokenKind::BraceOpen) {
         let name = ctx.expect(TokenKind::Word)?;
-        ctx.info.add_variable_read(identifier(ctx.document, name));
+        add_var_ref(ctx, name, lsp::ReferenceKind::Read);
         ctx.expect(TokenKind::BraceClose)?;
     }
     else if ctx.consume(TokenKind::ParenOpen) {
@@ -249,7 +280,7 @@ fn extract_loop_body(ctx: &mut Context) -> ParseResult<()> {
 
 fn extract_for_loop(ctx: &mut Context) -> ParseResult<()> {
     let variable = ctx.expect(TokenKind::Word)?;
-    ctx.info.add_variable_write(identifier(ctx.document, variable));
+    add_var_ref(ctx, variable, lsp::ReferenceKind::Write);
     skip_whitespace(ctx);
     ctx.expect_word("in")?;
     skip_whitespace(ctx);
@@ -310,13 +341,13 @@ fn extract_case(ctx: &mut Context) -> ParseResult<()> {
     Ok(())
 }
 
-fn extract_function(ctx: &mut Context, id: db::Identifier) -> ParseResult<()> {
+fn extract_function(ctx: &mut Context, word: Token) -> ParseResult<()> {
     skip_whitespace(ctx);
     ctx.expect(TokenKind::ParenClose)?;
     skip_empty_lines(ctx);
     ctx.expect(TokenKind::BraceOpen)?;
     skip_empty_lines(ctx);
-    ctx.info.add_function_definition(id);
+    add_cmd_ref(ctx, word, lsp::ReferenceKind::Write);
     extract_statements_until(ctx, kind_matches(&[TokenKind::BraceClose]));
     ctx.expect(TokenKind::BraceClose)?;
     Ok(())
@@ -324,23 +355,23 @@ fn extract_function(ctx: &mut Context, id: db::Identifier) -> ParseResult<()> {
 
 fn extract_line_command(
     ctx: &mut Context,
-    id: db::Identifier,
+    word: Token,
     end: impl Copy + Fn(Token) -> bool,
 ) -> ParseResult<()> {
     if ctx.consume(TokenKind::Equal) {
         parse_value(ctx)?;
         skip_whitespace(ctx);
         if ctx.lexer.peek().is_none_or(end) {
-            ctx.info.add_variable_write(id);
+            add_var_ref(ctx, word, lsp::ReferenceKind::Write);
         }
         else {
             let word = ctx.expect(TokenKind::Word)?;
             skip_whitespace(ctx);
-            extract_line_command(ctx, identifier(ctx.document, word), end)?;
+            extract_line_command(ctx, word, end)?;
         }
     }
     else {
-        ctx.info.add_command_reference(id);
+        add_cmd_ref(ctx, word, lsp::ReferenceKind::Read);
         extract_arguments_until(ctx, end);
     }
     Ok(())
@@ -348,14 +379,14 @@ fn extract_line_command(
 
 fn extract_command(
     ctx: &mut Context,
-    id: db::Identifier,
+    word: Token,
     end: impl Copy + Fn(Token) -> bool,
 ) -> ParseResult<()> {
     if ctx.consume(TokenKind::ParenOpen) {
-        extract_function(ctx, id)
+        extract_function(ctx, word)
     }
     else {
-        extract_line_command(ctx, id, end)
+        extract_line_command(ctx, word, end)
     }
 }
 
@@ -376,7 +407,7 @@ fn extract_statement_up_to(
                 "for" => extract_for_loop(ctx)?,
                 "while" => extract_while_loop(ctx)?,
                 "case" => extract_case(ctx)?,
-                _ => extract_command(ctx, identifier(ctx.document, word), end)?,
+                _ => extract_command(ctx, word, end)?,
             }
         }
         else if parse_value(ctx)? {
