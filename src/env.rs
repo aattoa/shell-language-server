@@ -11,29 +11,25 @@ fn is_executable(data: std::fs::Metadata) -> bool {
     !data.is_dir()
 }
 
-fn sorted<T: Ord>(mut vec: Vec<T>) -> Vec<T> {
+pub fn collect_executables(path: &str) -> Vec<String> {
+    let mut vec = std::env::split_paths(&path)
+        .flat_map(std::fs::read_dir)
+        .flat_map(|dir| dir.filter_map(Result::ok))
+        .filter(|entry| entry.metadata().is_ok_and(is_executable))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect::<Vec<String>>();
     vec.sort_unstable();
     vec.dedup();
     vec
 }
 
 pub fn collect_path_executables() -> Vec<String> {
-    match std::env::var("PATH") {
-        Ok(path) => sorted(
-            std::env::split_paths(&path)
-                .flat_map(std::fs::read_dir)
-                .flat_map(|dir| dir.filter_map(Result::ok))
-                .filter(|entry| entry.metadata().is_ok_and(is_executable))
-                .filter_map(|entry| entry.file_name().into_string().ok())
-                .collect(),
-        ),
-        Err(error) => {
-            eprintln!("[debug] Could not read PATH: {error}");
-            Vec::new()
-        }
-    }
+    let log = |error| {
+        eprintln!("[debug] Could not read PATH: {error}");
+    };
+    std::env::var("PATH").map_err(log).as_deref().map(collect_executables).unwrap_or_default()
 }
 
 pub fn collect_variables() -> Vec<String> {
-    std::env::vars_os().filter_map(|(name, _)| name.into_string().ok()).collect()
+    std::env::vars_os().filter_map(|var| var.0.into_string().ok()).collect()
 }

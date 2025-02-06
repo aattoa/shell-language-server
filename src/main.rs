@@ -16,9 +16,10 @@ mod util;
 const HELP: &str = r"Options:
   --help, -h       Display help information
   --version, -v    Display version information
-  --no-env-path    Do not complete commands available through PATH
+  --no-env-path    Do not complete commands available through $PATH
   --no-env-vars    Do not complete environment variable names
   --no-env         Equivalent to --no-env-path --no-env-vars
+  --path=[arg]     Use the given argument instead of $PATH
   --debug          Log every LSP request and response to stderr";
 
 fn bin_name() -> &'static str {
@@ -50,16 +51,25 @@ fn handle_command_line() -> config::Config {
                 config.complete.env_vars = false;
             }
             "-h" | "--help" => {
-                println!("Usage {} [options]\n{}", bin_name(), HELP);
+                println!("Usage: {} [options]\n{}", bin_name(), HELP);
                 std::process::exit(0);
             }
             "-v" | "--version" => {
                 println!("{} version {}", pkg_name(), pkg_version());
                 std::process::exit(0);
             }
-            arg => {
-                eprintln!("Unrecognized argument: {arg}");
+            "--path" => {
+                eprintln!("Missing argument for '--path'. Usage: '--path=value'");
                 std::process::exit(1);
+            }
+            arg => {
+                if let Some(path) = arg.strip_prefix("--path=") {
+                    config.path = Some(path.to_string());
+                }
+                else {
+                    eprintln!("Unrecognized argument: {arg}");
+                    std::process::exit(1);
+                }
             }
         }
     }

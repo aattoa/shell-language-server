@@ -4,14 +4,15 @@ pub struct Complete {
     pub env_vars: bool,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct Config {
     pub complete: Complete,
     pub debug: bool,
+    pub path: Option<String>,
 }
 
 impl Default for Complete {
-    fn default() -> Complete {
-        Complete { env_path: true, env_vars: true }
+    fn default() -> Self {
+        Self { env_path: true, env_vars: true }
     }
 }

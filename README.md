@@ -48,6 +48,7 @@ The server can be configured with the following command line arguments:
 - `--no-env-path`: Do not complete commands available through `$PATH`.
 - `--no-env-vars`: Do not complete environment variable names.
 - `--no-env`: Equivalent to `--no-env-path --no-env-vars`.
+- `--path=[arg]`: Use the given argument instead of $PATH.
 - `--debug`: Log every LSP request and response to `stderr`.
 
 ## Build

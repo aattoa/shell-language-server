@@ -289,7 +289,8 @@ fn handle_message(server: &mut Server, message: &str) -> Option<String> {
 pub fn run(config: config::Config) -> i32 {
     let mut server = Server::default();
     if config.complete.env_path {
-        server.db.path_executables = env::collect_path_executables();
+        server.db.path_executables = (config.path.as_deref())
+            .map_or_else(env::collect_path_executables, env::collect_executables);
     }
     if config.complete.env_vars {
         server.db.environment_variables = env::collect_variables();
