@@ -27,6 +27,7 @@ useful.
 ## Supported features
 
 - Go to definition
+- Hover documentation
 - Find references
 - Highlight references
 - Rename variables and functions
@@ -36,7 +37,6 @@ useful.
 
 ## Planned features
 
-- Hover documentation
 - Document symbols
 - Signature help
 - Code actions (e.g. replace a command name with its absolute path)

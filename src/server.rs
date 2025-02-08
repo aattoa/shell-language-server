@@ -1,4 +1,4 @@
-use crate::{config, db, env, lsp, rpc};
+use crate::{config, db, env, lsp, rpc, util};
 use serde_json::{from_value, json};
 use std::cmp::Ordering;
 type Json = serde_json::Value;
@@ -20,6 +20,7 @@ fn server_capabilities() -> Json {
             "interFileDependencies": false,
             "workspaceDiagnostics": false,
         },
+        "hoverProvider": true,
         "definitionProvider": true,
         "referencesProvider": true,
         "documentHighlightProvider": true,
@@ -41,25 +42,23 @@ fn get_document<'db>(
 }
 
 fn compare_position(position: lsp::Position, range: lsp::Range) -> Ordering {
-    if range.contains(position) {
-        Ordering::Equal
-    }
-    else if range.start < position {
-        Ordering::Less
-    }
-    else {
-        Ordering::Greater
-    }
+    if range.contains(position) { Ordering::Equal } else { range.start.cmp(&position) }
+}
+
+fn find_symbol(info: &db::DocumentInfo, position: lsp::Position) -> Option<db::SymbolReference> {
+    info.references
+        .binary_search_by(|symbol| compare_position(position, symbol.reference.range))
+        .ok()
+        .map(|index| info.references[index])
 }
 
 fn find_references(
     info: &db::DocumentInfo,
     position: lsp::Position,
 ) -> impl Iterator<Item = lsp::Reference> + '_ {
-    info.references
-        .binary_search_by(|symbol| compare_position(position, symbol.reference.range))
+    find_symbol(info, position)
         .into_iter()
-        .flat_map(|index| info.symbols[info.references[index].id].ref_indices.iter())
+        .flat_map(|symbol| info.symbols[symbol.id].ref_indices.iter())
         .map(|&index| info.references[index as usize].reference)
 }
 
@@ -141,6 +140,52 @@ fn function_completions(
         .collect()
 }
 
+fn format_annotations(
+    markdown: &mut String,
+    document: &db::Document,
+    &db::Annotations { desc, exit, stdin, stdout, stderr, ref params }: &db::Annotations,
+) -> std::fmt::Result {
+    use std::fmt::Write;
+    if let Some(desc) = desc {
+        write!(markdown, "\n{}", desc.string(&document.text))?;
+    }
+    if !params.is_empty() {
+        write!(markdown, "\n\n---\n\n## Parameters")?;
+        for (index, param) in params.iter().enumerate() {
+            write!(markdown, "\n- `${}`: {}", index + 1, param.string(&document.text))?;
+        }
+    }
+    let section = |out: &mut String, view: Option<util::View>, name: &str| {
+        if let Some(view) = view {
+            write!(out, "\n\n---\n\n## {}\n{}", name, view.string(&document.text))?
+        };
+        Ok(())
+    };
+    section(markdown, exit, "Exit status")?;
+    section(markdown, stdout, "Standard output")?;
+    section(markdown, stderr, "Standard error")?;
+    section(markdown, stdin, "Standard input")?;
+    Ok(())
+}
+
+fn symbol_hover(document: &db::Document, symbol: db::SymbolReference) -> Json {
+    let description = match document.info.symbols[symbol.id].kind {
+        db::SymbolKind::Variable => "Variable",
+        db::SymbolKind::Command => "Command",
+    };
+    let mut value = format!("# {} `{}`", description, document.info.symbols[symbol.id].name);
+    match format_annotations(&mut value, document, &document.info.symbols[symbol.id].annotations) {
+        Ok(()) => json!({
+            "contents": lsp::MarkupContent { kind: lsp::MarkupKind::Markdown, value },
+            "range": symbol.reference.range,
+        }),
+        Err(error) => {
+            eprintln!("[debug] Could not format symbol annotations: {error}");
+            Json::Null
+        }
+    }
+}
+
 fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Json, rpc::Error> {
     match method {
         "initialize" => {
@@ -157,6 +202,12 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
                 eprintln!("[debug] Received uninitialize request when uninitialized");
             }
             Ok(Json::Null)
+        }
+        "textDocument/hover" => {
+            let params: lsp::PositionParams = from_value(params)?;
+            let document = get_document(&server.db, &params.document)?;
+            let hover = |symbol| symbol_hover(document, symbol);
+            Ok(find_symbol(&document.info, params.position).map_or(Json::Null, hover))
         }
         "textDocument/definition" => {
             let params: lsp::PositionParams = from_value(params)?;
@@ -295,6 +346,7 @@ pub fn run(config: config::Config) -> i32 {
     if config.complete.env_vars {
         server.db.environment_variables = env::collect_variables();
     }
+
     let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
     while server.exit_code.is_none() {
@@ -319,5 +371,6 @@ pub fn run(config: config::Config) -> i32 {
             }
         }
     }
+
     server.exit_code.unwrap()
 }
