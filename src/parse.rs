@@ -1,6 +1,6 @@
 use crate::lex::{self, Lexer, Token, TokenKind};
 use crate::shell::Shell;
-use crate::{db, lsp};
+use crate::{db, lsp, util};
 use std::collections::HashMap;
 
 type ParseResult<T> = Result<T, lsp::Diagnostic>;
@@ -11,6 +11,7 @@ struct Context<'a> {
     document: &'a str,
     commands: HashMap<String, db::SymbolId>,
     variables: HashMap<String, db::SymbolId>,
+    annotations: db::Annotations,
 }
 
 impl<'a> Context<'a> {
@@ -21,6 +22,7 @@ impl<'a> Context<'a> {
             document,
             commands: HashMap::new(),
             variables: HashMap::new(),
+            annotations: db::Annotations::default(),
         }
     }
     fn error(&mut self, message: impl Into<String>) -> lsp::Diagnostic {
@@ -42,9 +44,13 @@ impl<'a> Context<'a> {
     fn emit(&mut self, diagnostic: lsp::Diagnostic) {
         self.info.diagnostics.push(diagnostic);
     }
+    fn warn(&mut self, range: lsp::Range, message: impl Into<String>) {
+        self.emit(lsp::Diagnostic::warning(range, message))
+    }
 }
 
 fn symbol(
+    annotations: &mut db::Annotations,
     info: &mut db::DocumentInfo,
     symbols: &mut HashMap<String, db::SymbolId>,
     document: &str,
@@ -54,7 +60,14 @@ fn symbol(
 ) {
     let name = lex::escape(word.view.string(document));
     let id = symbols.get(&name).copied().unwrap_or_else(|| {
-        let id = info.symbols.push(db::Symbol::new(name.clone(), sym_kind));
+        let symbol = db::Symbol::new(
+            name.clone(),
+            sym_kind,
+            (ref_kind == lsp::ReferenceKind::Write)
+                .then(|| std::mem::take(annotations))
+                .unwrap_or_default(),
+        );
+        let id = info.symbols.push(symbol);
         symbols.insert(name, id);
         id
     });
@@ -63,11 +76,27 @@ fn symbol(
 }
 
 fn add_var_ref(ctx: &mut Context, word: Token, kind: lsp::ReferenceKind) {
-    symbol(&mut ctx.info, &mut ctx.variables, ctx.document, db::SymbolKind::Variable, kind, word);
+    symbol(
+        &mut ctx.annotations,
+        &mut ctx.info,
+        &mut ctx.variables,
+        ctx.document,
+        db::SymbolKind::Variable,
+        kind,
+        word,
+    );
 }
 
 fn add_cmd_ref(ctx: &mut Context, word: Token, kind: lsp::ReferenceKind) {
-    symbol(&mut ctx.info, &mut ctx.commands, ctx.document, db::SymbolKind::Command, kind, word);
+    symbol(
+        &mut ctx.annotations,
+        &mut ctx.info,
+        &mut ctx.commands,
+        ctx.document,
+        db::SymbolKind::Command,
+        kind,
+        word,
+    );
 }
 
 fn protected(ctx: &mut Context, callback: impl FnOnce(&mut Context) -> ParseResult<bool>) -> bool {
@@ -99,14 +128,45 @@ fn kind_matches(kinds: &'static [TokenKind]) -> impl Copy + Fn(Token) -> bool {
     |token| kinds.contains(&token.kind)
 }
 
+fn handle_comment(ctx: &mut Context, token: Token) {
+    if token.kind != TokenKind::Comment {
+        return;
+    }
+    let Some(line) = token.view.string(ctx.document).strip_prefix("##@").map(str::trim_start)
+    else {
+        return;
+    };
+    let offset = line.find(char::is_whitespace).unwrap_or(line.len());
+    let start = token.view.end - line[offset..].trim_start().len() as u32;
+    let view = util::View { start, end: token.view.end };
+    match &line[..offset] {
+        "desc" => ctx.annotations.desc = Some(view),
+        "exit" => ctx.annotations.exit = Some(view),
+        "stdin" => ctx.annotations.stdin = Some(view),
+        "stdout" => ctx.annotations.stdout = Some(view),
+        "stderr" => ctx.annotations.stderr = Some(view),
+        "param" => ctx.annotations.params.push(view),
+        "" => {
+            ctx.warn(token.range, "Empty directive");
+        }
+        directive => {
+            ctx.warn(token.range, format!("Unrecognized directive: '{directive}'"));
+        }
+    }
+}
+
 fn skip_whitespace(ctx: &mut Context) {
     const KINDS: &[TokenKind] = &[TokenKind::Space, TokenKind::Comment];
-    while ctx.lexer.next_if(kind_matches(KINDS)).is_some() {}
+    while let Some(token) = ctx.lexer.next_if(kind_matches(KINDS)) {
+        handle_comment(ctx, token);
+    }
 }
 
 fn skip_empty_lines(ctx: &mut Context) {
     const KINDS: &[TokenKind] = &[TokenKind::Space, TokenKind::Comment, TokenKind::NewLine];
-    while ctx.lexer.next_if(kind_matches(KINDS)).is_some() {}
+    while let Some(token) = ctx.lexer.next_if(kind_matches(KINDS)) {
+        handle_comment(ctx, token);
+    }
 }
 
 fn expect_statement_end(ctx: &mut Context) -> ParseResult<()> {
@@ -465,7 +525,7 @@ fn set_shell(ctx: &mut Context, comment: Token, shell: Shell) {
         return;
     }
     let msg = format!("{} is not supported yet, treating as {}", shell.name(), Shell::Posix.name());
-    ctx.emit(lsp::Diagnostic::warning(comment.range, msg));
+    ctx.warn(comment.range, msg);
 }
 
 fn parse_shebang(ctx: &mut Context) {
@@ -473,8 +533,11 @@ fn parse_shebang(ctx: &mut Context) {
         if let Some(shebang) = comment.view.string(ctx.document).strip_prefix("#!") {
             match shebang.parse() {
                 Ok(shell) => set_shell(ctx, comment, shell),
-                Err(error) => ctx.emit(lsp::Diagnostic::warning(comment.range, error)),
+                Err(error) => ctx.warn(comment.range, error),
             }
+        }
+        else {
+            handle_comment(ctx, comment);
         }
     }
 }

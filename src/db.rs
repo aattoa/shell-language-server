@@ -1,5 +1,5 @@
 use crate::indexvec::IndexVec;
-use crate::{define_index, lsp, parse};
+use crate::{define_index, lsp, parse, util};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -9,6 +9,16 @@ define_index!(pub SymbolId as u32);
 pub struct Identifier {
     pub name: String,
     pub range: lsp::Range,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Annotations {
+    pub desc: Option<util::View>,
+    pub exit: Option<util::View>,
+    pub stdin: Option<util::View>,
+    pub stdout: Option<util::View>,
+    pub stderr: Option<util::View>,
+    pub params: Vec<util::View>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -21,8 +31,10 @@ pub struct Symbol {
     pub name: String,
     pub kind: SymbolKind,
     pub ref_indices: Vec<u32>,
+    pub annotations: Annotations,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct SymbolReference {
     pub reference: lsp::Reference,
     pub id: SymbolId,
@@ -93,8 +105,8 @@ impl Document {
 }
 
 impl Symbol {
-    pub fn new(name: String, kind: SymbolKind) -> Self {
-        Self { name, kind, ref_indices: Vec::new() }
+    pub fn new(name: String, kind: SymbolKind, annotations: Annotations) -> Self {
+        Self { name, kind, annotations, ref_indices: Vec::new() }
     }
 }
 
