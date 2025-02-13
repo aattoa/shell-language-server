@@ -1,9 +1,10 @@
 use crate::indexvec::IndexVec;
 use crate::{define_index, lsp, parse, util};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 define_index!(pub SymbolId as u32);
+define_index!(pub DocumentId as u32);
 
 #[derive(Clone, Debug)]
 pub struct Identifier {
@@ -11,20 +12,27 @@ pub struct Identifier {
     pub range: lsp::Range,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum Annotation {
+    View(util::View),
+    Str(&'static str),
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Annotations {
-    pub desc: Option<util::View>,
-    pub exit: Option<util::View>,
-    pub stdin: Option<util::View>,
-    pub stdout: Option<util::View>,
-    pub stderr: Option<util::View>,
-    pub params: Vec<util::View>,
+    pub desc: Option<Annotation>,
+    pub exit: Option<Annotation>,
+    pub stdin: Option<Annotation>,
+    pub stdout: Option<Annotation>,
+    pub stderr: Option<Annotation>,
+    pub params: Vec<Annotation>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SymbolKind {
     Variable,
     Command,
+    Builtin,
 }
 
 pub struct Symbol {
@@ -47,6 +55,7 @@ pub struct DocumentInfo {
     pub symbols: IndexVec<Symbol, SymbolId>,
 }
 
+#[derive(Default)]
 pub struct Document {
     pub text: String,
     pub info: DocumentInfo,
@@ -54,7 +63,8 @@ pub struct Document {
 
 #[derive(Default)]
 pub struct Database {
-    pub documents: HashMap<PathBuf, Document>,
+    pub documents: IndexVec<Document, DocumentId>,
+    pub document_paths: HashMap<PathBuf, DocumentId>,
     pub path_executables: Vec<String>,
     pub environment_variables: Vec<String>,
 }
@@ -88,6 +98,15 @@ fn text_range(text: &str, range: lsp::Range) -> std::ops::Range<usize> {
     begin..end
 }
 
+impl Database {
+    pub fn open(&mut self, path: PathBuf, document: Document) {
+        self.document_paths.insert(path, self.documents.push(document));
+    }
+    pub fn close(&mut self, path: &Path) {
+        self.documents[self.document_paths[path]] = Document::default();
+    }
+}
+
 impl Document {
     pub fn new(text: impl Into<String>) -> Self {
         Self { text: text.into(), info: DocumentInfo::default() }
@@ -100,6 +119,15 @@ impl Document {
         self.info.references.sort_unstable_by_key(|symbol| symbol.reference.range.start);
         for (index, symbol) in self.info.references.iter().enumerate() {
             self.info.symbols[symbol.id].ref_indices.push(index as u32);
+        }
+    }
+}
+
+impl Annotation {
+    pub fn string(self, document: &str) -> &str {
+        match self {
+            Annotation::View(view) => view.string(document),
+            Annotation::Str(str) => str,
         }
     }
 }

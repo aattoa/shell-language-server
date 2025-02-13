@@ -1,13 +1,14 @@
-use crate::{config, db, env, lsp, rpc, util};
+use crate::{config, db, env, lsp, rpc};
 use serde_json::{from_value, json};
 use std::cmp::Ordering;
+use std::fmt::Write;
 type Json = serde_json::Value;
 
 #[derive(Default)]
 struct Server {
-    pub db: db::Database,
-    pub initialized: bool,
-    pub exit_code: Option<i32>,
+    db: db::Database,
+    initialized: bool,
+    exit_code: Option<i32>,
 }
 
 fn server_capabilities() -> Json {
@@ -33,7 +34,7 @@ fn get_document<'db>(
     db: &'db db::Database,
     identifier: &lsp::DocumentIdentifier,
 ) -> Result<&'db db::Document, rpc::Error> {
-    db.documents.get(&identifier.uri.path).ok_or_else(|| {
+    db.document_paths.get(&identifier.uri.path).map(|&id| &db.documents[id]).ok_or_else(|| {
         rpc::Error::invalid_params(format!(
             "Unopened document referenced: {}",
             identifier.uri.path.display()
@@ -80,7 +81,7 @@ fn get_line(document: &db::Document, line: u32) -> Result<&str, rpc::Error> {
 }
 
 fn is_word(char: char) -> bool {
-    char.is_alphanumeric() || char == '_' || char == '-'
+    char.is_alphanumeric() || "_-".contains(char)
 }
 
 fn determine_completion_kind(
@@ -88,11 +89,12 @@ fn determine_completion_kind(
     cursor: lsp::Position,
 ) -> (usize, lsp::CompletionItemKind) {
     for (index, char) in prefix.chars().rev().enumerate() {
+        let offset = cursor.character as usize - index;
         if "${".contains(char) {
-            return (cursor.character as usize - index, lsp::CompletionItemKind::Variable);
+            return (offset, lsp::CompletionItemKind::Variable);
         }
         else if !is_word(char) {
-            return (cursor.character as usize - index, lsp::CompletionItemKind::Function);
+            return (offset, lsp::CompletionItemKind::Function);
         }
     }
     (0, lsp::CompletionItemKind::Function)
@@ -107,7 +109,7 @@ fn completion(range: lsp::Range, name: &str, kind: lsp::CompletionItemKind) -> J
 }
 
 fn variable_completions(
-    server: &Server,
+    db: &db::Database,
     document: &db::Document,
     range: lsp::Range,
     prefix: &str,
@@ -116,7 +118,7 @@ fn variable_completions(
         .filter(|symbol| symbol.kind == db::SymbolKind::Variable && symbol.name.starts_with(prefix))
         .map(|symbol| completion(range, &symbol.name, lsp::CompletionItemKind::Variable))
         .chain(
-            (server.db.environment_variables.iter())
+            (db.environment_variables.iter())
                 .filter(|name| name.starts_with(prefix))
                 .map(|name| completion(range, name, lsp::CompletionItemKind::Variable)),
         )
@@ -124,7 +126,7 @@ fn variable_completions(
 }
 
 fn function_completions(
-    server: &Server,
+    db: &db::Database,
     document: &db::Document,
     range: lsp::Range,
     prefix: &str,
@@ -133,7 +135,7 @@ fn function_completions(
         .filter(|symbol| symbol.kind == db::SymbolKind::Command && symbol.name.starts_with(prefix))
         .map(|symbol| completion(range, &symbol.name, lsp::CompletionItemKind::Function))
         .chain(
-            (server.db.path_executables.iter())
+            (db.path_executables.iter())
                 .filter(|name| name.starts_with(prefix))
                 .map(|name| completion(range, name, lsp::CompletionItemKind::Function)),
         )
@@ -145,7 +147,6 @@ fn format_annotations(
     document: &db::Document,
     &db::Annotations { desc, exit, stdin, stdout, stderr, ref params }: &db::Annotations,
 ) -> std::fmt::Result {
-    use std::fmt::Write;
     if let Some(desc) = desc {
         write!(markdown, "\n{}", desc.string(&document.text))?;
     }
@@ -155,16 +156,16 @@ fn format_annotations(
             write!(markdown, "\n- `${}`: {}", index + 1, param.string(&document.text))?;
         }
     }
-    let section = |out: &mut String, view: Option<util::View>, name: &str| {
+    let mut section = |view: Option<db::Annotation>, name: &str| {
         if let Some(view) = view {
-            write!(out, "\n\n---\n\n## {}\n{}", name, view.string(&document.text))?
+            write!(markdown, "\n\n---\n\n## {}\n{}", name, view.string(&document.text))?
         };
         Ok(())
     };
-    section(markdown, exit, "Exit status")?;
-    section(markdown, stdout, "Standard output")?;
-    section(markdown, stderr, "Standard error")?;
-    section(markdown, stdin, "Standard input")?;
+    section(stdout, "Standard output")?;
+    section(stderr, "Standard error")?;
+    section(stdin, "Standard input")?;
+    section(exit, "Exit status")?;
     Ok(())
 }
 
@@ -172,6 +173,7 @@ fn symbol_hover(document: &db::Document, symbol: db::SymbolReference) -> Json {
     let description = match document.info.symbols[symbol.id].kind {
         db::SymbolKind::Variable => "Variable",
         db::SymbolKind::Command => "Command",
+        db::SymbolKind::Builtin => "Shell builtin",
     };
     let mut value = format!("# {} `{}`", description, document.info.symbols[symbol.id].name);
     match format_annotations(&mut value, document, &document.info.symbols[symbol.id].annotations) {
@@ -256,10 +258,10 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
 
             match kind {
                 lsp::CompletionItemKind::Variable => {
-                    Ok(variable_completions(server, document, range, prefix))
+                    Ok(variable_completions(&server.db, document, range, prefix))
                 }
                 lsp::CompletionItemKind::Function => {
-                    Ok(function_completions(server, document, range, prefix))
+                    Ok(function_completions(&server.db, document, range, prefix))
                 }
                 _ => Err(rpc::Error::new(rpc::ErrorCode::InternalError, "completion failure")),
             }
@@ -272,25 +274,25 @@ fn handle_notification(server: &mut Server, method: &str, params: Json) -> Resul
     match method {
         "initialized" => Ok(()),
         "exit" => {
-            server.exit_code = Some(if server.initialized { 1 } else { 0 });
+            server.exit_code = Some(server.initialized as i32);
             Ok(())
         }
         "textDocument/didOpen" => {
             let params: lsp::DidOpenDocumentParams = from_value(params)?;
             let mut document = db::Document::new(params.document.text);
             document.analyze();
-            server.db.documents.insert(params.document.uri.path, document);
+            server.db.open(params.document.uri.path, document);
             Ok(())
         }
         "textDocument/didClose" => {
             let params: lsp::DidCloseDocumentParams = from_value(params)?;
-            server.db.documents.remove(&params.document.uri.path);
+            server.db.close(&params.document.uri.path);
             Ok(())
         }
         "textDocument/didChange" => {
             let params: lsp::DidChangeDocumentParams = from_value(params)?;
-            let document = (server.db.documents)
-                .get_mut(&params.document.identifier.uri.path)
+            let document_id = server.db.document_paths[&params.document.identifier.uri.path];
+            let document = (server.db.documents.get_mut(document_id))
                 .ok_or_else(|| rpc::Error::invalid_params("Can not edit unopened document"))?;
             for change in params.changes {
                 document.edit(change.range, &change.text);
@@ -330,7 +332,7 @@ fn deserialization_error(error: serde_json::Error) -> rpc::Response {
 }
 
 fn handle_message(server: &mut Server, message: &str) -> Option<String> {
-    let reply = match serde_json::from_str::<rpc::Request>(message) {
+    let reply = match serde_json::from_str(message) {
         Ok(request) => dispatch_handle_request(server, request),
         Err(error) => Some(deserialization_error(error)),
     };
@@ -339,6 +341,7 @@ fn handle_message(server: &mut Server, message: &str) -> Option<String> {
 
 pub fn run(config: config::Config) -> i32 {
     let mut server = Server::default();
+
     if config.complete.env_path {
         server.db.path_executables = (config.path.as_deref())
             .map_or_else(env::collect_path_executables, env::collect_executables);
@@ -349,7 +352,11 @@ pub fn run(config: config::Config) -> i32 {
 
     let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
-    while server.exit_code.is_none() {
+
+    loop {
+        if let Some(code) = server.exit_code {
+            return code;
+        }
         match rpc::read_message(&mut stdin) {
             Ok(message) => {
                 if config.debug {
@@ -371,6 +378,4 @@ pub fn run(config: config::Config) -> i32 {
             }
         }
     }
-
-    server.exit_code.unwrap()
 }

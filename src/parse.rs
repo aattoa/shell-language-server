@@ -138,16 +138,16 @@ fn handle_comment(ctx: &mut Context, token: Token) {
     };
     let offset = line.find(char::is_whitespace).unwrap_or(line.len());
     let start = token.view.end - line[offset..].trim_start().len() as u32;
-    let view = util::View { start, end: token.view.end };
+    let annotation = db::Annotation::View(util::View { start, end: token.view.end });
     match &line[..offset] {
-        "desc" => ctx.annotations.desc = Some(view),
-        "exit" => ctx.annotations.exit = Some(view),
-        "stdin" => ctx.annotations.stdin = Some(view),
-        "stdout" => ctx.annotations.stdout = Some(view),
-        "stderr" => ctx.annotations.stderr = Some(view),
-        "param" => ctx.annotations.params.push(view),
+        "desc" => ctx.annotations.desc = Some(annotation),
+        "exit" => ctx.annotations.exit = Some(annotation),
+        "stdin" => ctx.annotations.stdin = Some(annotation),
+        "stdout" => ctx.annotations.stdout = Some(annotation),
+        "stderr" => ctx.annotations.stderr = Some(annotation),
+        "param" => ctx.annotations.params.push(annotation),
         "" => {
-            ctx.warn(token.range, "Empty directive");
+            ctx.warn(token.range, "Missing directive");
         }
         directive => {
             ctx.warn(token.range, format!("Unrecognized directive: '{directive}'"));
@@ -204,22 +204,14 @@ fn parse_keyword(ctx: &mut Context, keyword: &str) -> bool {
     ctx.lexer.next_if(predicate).is_some()
 }
 
-fn parse_dollar(dollar: Token, ctx: &mut Context) -> ParseResult<()> {
-    parse_expansion(dollar, ctx)?;
-    Ok(())
-}
-
 fn parse_word(ctx: &mut Context) -> ParseResult<bool> {
-    Ok(if ctx.consume(TokenKind::Word) {
-        true
+    if let Some(dollar) = ctx.lexer.next_if_kind(TokenKind::Dollar) {
+        extract_potential_expansion(dollar, ctx)?;
     }
-    else if let Some(dollar) = ctx.lexer.next_if_kind(TokenKind::Dollar) {
-        parse_dollar(dollar, ctx)?;
-        true
+    else if !ctx.consume(TokenKind::Word) {
+        return Ok(false);
     }
-    else {
-        false
-    })
+    Ok(true)
 }
 
 fn parse_simple_value(ctx: &mut Context) -> ParseResult<bool> {
@@ -271,7 +263,7 @@ fn extract_arguments_until(ctx: &mut Context, end: impl Copy + Fn(Token) -> bool
     }
 }
 
-fn parse_expansion(dollar: Token, ctx: &mut Context) -> ParseResult<bool> {
+fn extract_potential_expansion(dollar: Token, ctx: &mut Context) -> ParseResult<()> {
     if let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
         add_var_ref(ctx, word, lsp::ReferenceKind::Read);
     }
@@ -287,9 +279,8 @@ fn parse_expansion(dollar: Token, ctx: &mut Context) -> ParseResult<bool> {
     else if !ctx.consume(TokenKind::Dollar) {
         let message = "This `$` is literal. Use `\\$` to suppress this hint.";
         ctx.emit(lsp::Diagnostic::info(dollar.range, message));
-        return Ok(false);
     }
-    Ok(true)
+    Ok(())
 }
 
 fn parse_string(ctx: &mut Context, quote: Token) {
@@ -297,7 +288,7 @@ fn parse_string(ctx: &mut Context, quote: Token) {
         match token.kind {
             TokenKind::DoubleQuote => return,
             TokenKind::Dollar => {
-                if let Err(diagnostic) = parse_expansion(token, ctx) {
+                if let Err(diagnostic) = extract_potential_expansion(token, ctx) {
                     ctx.emit(diagnostic);
                 }
             }
@@ -401,6 +392,38 @@ fn extract_case(ctx: &mut Context) -> ParseResult<()> {
     Ok(())
 }
 
+fn extract_builtin_variable_declaration(ctx: &mut Context) -> ParseResult<()> {
+    skip_whitespace(ctx);
+    while let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
+        add_var_ref(ctx, word, lsp::ReferenceKind::Write);
+        if ctx.consume(TokenKind::Equal) {
+            parse_value(ctx)?;
+        }
+        skip_whitespace(ctx);
+    }
+    Ok(())
+}
+
+fn extract_builtin_unset(ctx: &mut Context) -> ParseResult<()> {
+    skip_whitespace(ctx);
+    let add_ref = if parse_keyword(ctx, "-f") {
+        skip_whitespace(ctx);
+        add_cmd_ref
+    }
+    else if parse_keyword(ctx, "-v") {
+        skip_whitespace(ctx);
+        add_var_ref
+    }
+    else {
+        add_var_ref
+    };
+    while let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
+        add_ref(ctx, word, lsp::ReferenceKind::Write);
+        skip_whitespace(ctx);
+    }
+    Ok(())
+}
+
 fn extract_function(ctx: &mut Context, word: Token) -> ParseResult<()> {
     skip_whitespace(ctx);
     ctx.expect(TokenKind::ParenClose)?;
@@ -431,6 +454,19 @@ fn extract_line_command(
         }
     }
     else {
+        let command = lex::escape(word.view.string(ctx.document));
+        if let Some(&id) = ctx.commands.get(&command) {
+            if ctx.info.symbols[id].kind == db::SymbolKind::Builtin {
+                let reference = lsp::Reference::read(word.range);
+                ctx.info.references.push(db::SymbolReference { reference, id });
+                match command.as_str() {
+                    "export" | "readonly" => extract_builtin_variable_declaration(ctx)?,
+                    "unset" => extract_builtin_unset(ctx)?,
+                    _ => extract_arguments_until(ctx, end),
+                }
+                return Ok(());
+            }
+        }
         add_cmd_ref(ctx, word, lsp::ReferenceKind::Read);
         extract_arguments_until(ctx, end);
     }
@@ -545,9 +581,43 @@ fn parse_shebang(ctx: &mut Context) {
 pub fn parse(input: &str) -> db::DocumentInfo {
     let mut ctx = Context::new(input);
     parse_shebang(&mut ctx);
+    register_builtins(&mut ctx);
     skip_empty_lines(&mut ctx);
     extract_statements_until(&mut ctx, |_| false);
     ctx.info
+}
+
+fn register_builtin(ctx: &mut Context, name: String, desc: &'static str) {
+    let symbol = db::Symbol {
+        name: name.clone(),
+        kind: db::SymbolKind::Builtin,
+        ref_indices: Vec::new(),
+        annotations: db::Annotations {
+            desc: Some(db::Annotation::Str(desc)),
+            ..db::Annotations::default()
+        },
+    };
+    ctx.commands.insert(name, ctx.info.symbols.push(symbol));
+}
+
+fn register_builtins(ctx: &mut Context) {
+    for (name, desc) in [
+        ("break", "Break out of a loop"),
+        ("continue", "Continue from the top of the loop"),
+        ("eval", "Execute the argument as a shell command"),
+        ("exec", "Replace the current shell with the given command"),
+        ("exit", "Exit the shell"),
+        ("export", "Export variables to subsequent commands"),
+        ("readonly", "Mark variables as immutable"),
+        ("return", "Return from a function"),
+        ("set", "Set shell options"),
+        ("shift", "Shift positional parameters"),
+        ("times", "Display accumulated process times"),
+        ("trap", "Trap signals"),
+        ("unset", "Unset variables or functions"),
+    ] {
+        register_builtin(ctx, name.to_string(), desc);
+    }
 }
 
 #[cfg(test)]
