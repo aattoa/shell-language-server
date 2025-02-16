@@ -8,6 +8,7 @@ type ParseResult<T> = Result<T, lsp::Diagnostic>;
 struct Context<'a> {
     info: db::DocumentInfo,
     lexer: Lexer<'a>,
+    shell: Shell,
     document: &'a str,
     commands: HashMap<String, db::SymbolId>,
     variables: HashMap<String, db::SymbolId>,
@@ -19,6 +20,7 @@ impl<'a> Context<'a> {
         Self {
             info: db::DocumentInfo::default(),
             lexer: Lexer::new(document),
+            shell: Shell::Posix,
             document,
             commands: HashMap::new(),
             variables: HashMap::new(),
@@ -46,6 +48,9 @@ impl<'a> Context<'a> {
     }
     fn warn(&mut self, range: lsp::Range, message: impl Into<String>) {
         self.emit(lsp::Diagnostic::warning(range, message))
+    }
+    fn inform(&mut self, range: lsp::Range, message: impl Into<String>) {
+        self.emit(lsp::Diagnostic::info(range, message))
     }
 }
 
@@ -76,27 +81,23 @@ fn symbol(
 }
 
 fn add_var_ref(ctx: &mut Context, word: Token, kind: lsp::ReferenceKind) {
-    symbol(
-        &mut ctx.annotations,
-        &mut ctx.info,
-        &mut ctx.variables,
-        ctx.document,
-        db::SymbolKind::Variable,
-        kind,
-        word,
-    );
+    #[rustfmt::skip] symbol(&mut ctx.annotations, &mut ctx.info, &mut ctx.variables, ctx.document, db::SymbolKind::Variable, kind, word);
 }
 
 fn add_cmd_ref(ctx: &mut Context, word: Token, kind: lsp::ReferenceKind) {
-    symbol(
-        &mut ctx.annotations,
-        &mut ctx.info,
-        &mut ctx.commands,
-        ctx.document,
+    #[rustfmt::skip] symbol(&mut ctx.annotations, &mut ctx.info, &mut ctx.commands, ctx.document, db::SymbolKind::Command, kind, word);
+}
+
+fn define_function(ctx: &mut Context, word: Token) {
+    let name = lex::escape(word.view.string(ctx.document));
+    let id = ctx.info.symbols.push(db::Symbol::new(
+        name.clone(),
         db::SymbolKind::Command,
-        kind,
-        word,
-    );
+        std::mem::take(&mut ctx.annotations),
+    ));
+    let reference = lsp::Reference::write(word.range);
+    ctx.info.references.push(db::SymbolReference { reference, id });
+    ctx.commands.insert(name, id);
 }
 
 fn protected(ctx: &mut Context, callback: impl FnOnce(&mut Context) -> ParseResult<bool>) -> bool {
@@ -107,6 +108,10 @@ fn protected(ctx: &mut Context, callback: impl FnOnce(&mut Context) -> ParseResu
             false
         }
     }
+}
+
+fn is_identifier(str: &str, shell: Shell) -> bool {
+    if shell == Shell::Bash { str.chars().all(|char| char != '$') } else { lex::is_name(str) }
 }
 
 const END_KINDS: &[TokenKind] = {
@@ -277,8 +282,7 @@ fn extract_potential_expansion(dollar: Token, ctx: &mut Context) -> ParseResult<
         ctx.expect(TokenKind::ParenClose)?;
     }
     else if !ctx.consume(TokenKind::Dollar) {
-        let message = "This `$` is literal. Use `\\$` to suppress this hint.";
-        ctx.emit(lsp::Diagnostic::info(dollar.range, message));
+        ctx.inform(dollar.range, "This `$` is literal. Use `\\$` to suppress this hint.")
     }
     Ok(())
 }
@@ -425,12 +429,15 @@ fn extract_builtin_unset(ctx: &mut Context) -> ParseResult<()> {
 }
 
 fn extract_function(ctx: &mut Context, word: Token) -> ParseResult<()> {
+    if !is_identifier(word.view.string(ctx.document), ctx.shell) {
+        ctx.warn(word.range, "Invalid function name");
+    }
+    define_function(ctx, word);
     skip_whitespace(ctx);
     ctx.expect(TokenKind::ParenClose)?;
     skip_empty_lines(ctx);
     ctx.expect(TokenKind::BraceOpen)?;
     skip_empty_lines(ctx);
-    add_cmd_ref(ctx, word, lsp::ReferenceKind::Write);
     extract_statements_until(ctx, kind_matches(&[TokenKind::BraceClose]));
     ctx.expect(TokenKind::BraceClose)?;
     Ok(())
@@ -556,19 +563,11 @@ fn skip_to_next_recovery_point(ctx: &mut Context) {
     }
 }
 
-fn set_shell(ctx: &mut Context, comment: Token, shell: Shell) {
-    if shell == Shell::Posix {
-        return;
-    }
-    let msg = format!("{} is not supported yet, treating as {}", shell.name(), Shell::Posix.name());
-    ctx.warn(comment.range, msg);
-}
-
 fn parse_shebang(ctx: &mut Context) {
     if let Some(comment) = ctx.lexer.next_if_kind(TokenKind::Comment) {
         if let Some(shebang) = comment.view.string(ctx.document).strip_prefix("#!") {
             match shebang.parse() {
-                Ok(shell) => set_shell(ctx, comment, shell),
+                Ok(shell) => ctx.shell = shell,
                 Err(error) => ctx.warn(comment.range, error),
             }
         }
@@ -587,8 +586,8 @@ pub fn parse(input: &str) -> db::DocumentInfo {
     ctx.info
 }
 
-fn register_builtin(ctx: &mut Context, name: String, desc: &'static str) {
-    let symbol = db::Symbol {
+fn builtin_symbol(name: String, desc: &'static str) -> db::Symbol {
+    db::Symbol {
         name: name.clone(),
         kind: db::SymbolKind::Builtin,
         ref_indices: Vec::new(),
@@ -596,12 +595,13 @@ fn register_builtin(ctx: &mut Context, name: String, desc: &'static str) {
             desc: Some(db::Annotation::Str(desc)),
             ..db::Annotations::default()
         },
-    };
-    ctx.commands.insert(name, ctx.info.symbols.push(symbol));
+    }
 }
 
 fn register_builtins(ctx: &mut Context) {
     for (name, desc) in [
+        (".", "Execute a script in the current environment"),
+        (":", "The null command, does nothing and always succeeds"),
         ("break", "Break out of a loop"),
         ("continue", "Continue from the top of the loop"),
         ("eval", "Execute the argument as a shell command"),
@@ -616,7 +616,8 @@ fn register_builtins(ctx: &mut Context) {
         ("trap", "Trap signals"),
         ("unset", "Unset variables or functions"),
     ] {
-        register_builtin(ctx, name.to_string(), desc);
+        let name = name.to_string();
+        ctx.commands.insert(name.clone(), ctx.info.symbols.push(builtin_symbol(name, desc)));
     }
 }
 

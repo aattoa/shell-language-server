@@ -188,6 +188,11 @@ pub fn escape(str: &str) -> String {
     string
 }
 
+pub fn is_name(str: &str) -> bool {
+    let mut chars = str.chars();
+    chars.next().is_some_and(char::is_alphabetic) && chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+
 impl TokenKind {
     pub fn show(self) -> &'static str {
         match self {
@@ -275,5 +280,15 @@ mod tests {
         assert_eq!(super::escape("he\\llo"), "hello");
         assert_eq!(super::escape("he\\\\llo"), "he\\llo");
         assert_eq!(super::escape("\\h\\e\\l\\l\\o"), "hello");
+    }
+
+    #[test]
+    fn is_name() {
+        assert!(super::is_name("hello"));
+        assert!(super::is_name("hello_world"));
+        assert!(super::is_name("helloWorld10"));
+        assert!(!super::is_name("10helloWorld10"));
+        assert!(!super::is_name("hello-world"));
+        assert!(!super::is_name(""));
     }
 }
