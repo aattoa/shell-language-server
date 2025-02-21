@@ -55,7 +55,9 @@ pub struct DiagnosticRelated {
 pub struct Diagnostic {
     pub range: Range,
     pub severity: Severity,
+    pub source: &'static str,
     pub message: String,
+    pub code: i32,
     #[serde(rename = "relatedInformation")]
     pub related: Vec<DiagnosticRelated>,
 }
@@ -186,7 +188,7 @@ impl Range {
         Self { start, end }
     }
     pub fn for_position(start: Position) -> Self {
-        Self { start, end: Position { character: start.character + 1, ..start } }
+        Self { start, end: Position { line: start.line, character: start.character + 1 } }
     }
     pub fn contains(self, position: Position) -> bool {
         self.start <= position && position < self.end // End is exclusive
@@ -203,8 +205,15 @@ impl Reference {
 }
 
 impl Diagnostic {
-    pub fn new(range: Range, severity: Severity, message: String) -> Self {
-        Self { range, severity, message, related: Vec::new() }
+    pub fn new(range: Range, severity: Severity, message: impl Into<String>) -> Self {
+        Self {
+            range,
+            severity,
+            source: "shell-language-server",
+            message: message.into(),
+            code: 0, // todo
+            related: Vec::new(),
+        }
     }
     pub fn error(range: Range, message: impl Into<String>) -> Self {
         Self::new(range, Severity::Error, message.into())
@@ -258,7 +267,7 @@ impl Serialize for DocumentURI {
 
 struct DocumentURIVisitor;
 
-impl<'de> serde::de::Visitor<'de> for DocumentURIVisitor {
+impl serde::de::Visitor<'_> for DocumentURIVisitor {
     type Value = DocumentURI;
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         formatter.write_str("a URI with file scheme")

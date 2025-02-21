@@ -1,12 +1,13 @@
-use crate::{config, db, env, lsp, rpc};
+use crate::config::{self, Config};
+use crate::{db, env, external, lsp, parse, rpc};
 use serde_json::{from_value, json};
 use std::cmp::Ordering;
-use std::fmt::Write;
 type Json = serde_json::Value;
 
 #[derive(Default)]
 struct Server {
     db: db::Database,
+    config: Config,
     initialized: bool,
     exit_code: Option<i32>,
 }
@@ -132,7 +133,7 @@ fn function_completions(
     prefix: &str,
 ) -> Json {
     (document.info.symbols.underlying.iter())
-        .filter(|symbol| symbol.kind == db::SymbolKind::Command && symbol.name.starts_with(prefix))
+        .filter(|symbol| symbol.kind != db::SymbolKind::Variable && symbol.name.starts_with(prefix))
         .map(|symbol| completion(range, &symbol.name, lsp::CompletionItemKind::Function))
         .chain(
             (db.path_executables.iter())
@@ -147,6 +148,7 @@ fn format_annotations(
     document: &db::Document,
     &db::Annotations { desc, exit, stdin, stdout, stderr, ref params }: &db::Annotations,
 ) -> std::fmt::Result {
+    use std::fmt::Write;
     if let Some(desc) = desc {
         write!(markdown, "\n{}", desc.string(&document.text))?;
     }
@@ -188,12 +190,42 @@ fn symbol_hover(document: &db::Document, symbol: db::SymbolReference) -> Json {
     }
 }
 
+fn analyze(document: &mut db::Document, config: &Config) {
+    document.info = parse::parse(&document.text);
+    if let Some(path) = config.shellcheck.path() {
+        match external::shellcheck::analyze(path, &document.text) {
+            Ok(external::shellcheck::Info { diagnostics }) => {
+                document.info.diagnostics.extend(diagnostics)
+            }
+            Err(error) => eprintln!("[debug] Failed to run shellcheck: {error}"),
+        }
+    }
+}
+
+fn initialize(server: &mut Server) {
+    if std::mem::replace(&mut server.initialized, true) {
+        eprintln!("[debug] Received initialize request when initialized");
+        return;
+    }
+    if server.config.complete.env_path {
+        server.db.path_executables = (server.config.path.as_deref())
+            .map_or_else(env::collect_path_executables, env::collect_executables);
+    }
+    if server.config.complete.env_vars {
+        server.db.environment_variables = env::collect_variables();
+    }
+    if let Some(path) = server.config.shellcheck.path() {
+        if !std::path::Path::new(path).exists() {
+            eprintln!("[debug] Invalid shellcheck path: {path}");
+            server.config.shellcheck = config::Shellcheck::Enable(false);
+        }
+    }
+}
+
 fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Json, rpc::Error> {
     match method {
         "initialize" => {
-            if std::mem::replace(&mut server.initialized, true) {
-                eprintln!("[debug] Received initialize request when initialized");
-            }
+            initialize(server);
             Ok(json!({
                 "capabilities": server_capabilities(),
                 "serverInfo": { "name": "shell-language-server" },
@@ -280,7 +312,7 @@ fn handle_notification(server: &mut Server, method: &str, params: Json) -> Resul
         "textDocument/didOpen" => {
             let params: lsp::DidOpenDocumentParams = from_value(params)?;
             let mut document = db::Document::new(params.document.text);
-            document.analyze();
+            analyze(&mut document, &server.config);
             server.db.open(params.document.uri.path, document);
             Ok(())
         }
@@ -297,7 +329,7 @@ fn handle_notification(server: &mut Server, method: &str, params: Json) -> Resul
             for change in params.changes {
                 document.edit(change.range, &change.text);
             }
-            document.analyze();
+            analyze(document, &server.config);
             Ok(())
         }
         _ => {
@@ -326,8 +358,8 @@ fn dispatch_handle_request(server: &mut Server, message: rpc::Request) -> Option
 }
 
 fn deserialization_error(error: serde_json::Error) -> rpc::Response {
-    let code =
-        if error.is_data() { rpc::ErrorCode::InvalidParams } else { rpc::ErrorCode::ParseError };
+    use rpc::ErrorCode::*;
+    let code = if error.is_data() { InvalidParams } else { ParseError };
     rpc::Response::error(None, rpc::Error::new(code, error.to_string()))
 }
 
@@ -339,17 +371,8 @@ fn handle_message(server: &mut Server, message: &str) -> Option<String> {
     reply.map(|reply| serde_json::to_string(&reply).expect("Reply serialization failed"))
 }
 
-pub fn run(config: config::Config) -> i32 {
-    let mut server = Server::default();
-
-    if config.complete.env_path {
-        server.db.path_executables = (config.path.as_deref())
-            .map_or_else(env::collect_path_executables, env::collect_executables);
-    }
-    if config.complete.env_vars {
-        server.db.environment_variables = env::collect_variables();
-    }
-
+pub fn run(config: Config) -> i32 {
+    let mut server = Server { config, ..Server::default() };
     let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
 
@@ -359,11 +382,11 @@ pub fn run(config: config::Config) -> i32 {
         }
         match rpc::read_message(&mut stdin) {
             Ok(message) => {
-                if config.debug {
+                if server.config.debug {
                     eprintln!("[debug] --> {}", message);
                 }
                 if let Some(reply) = handle_message(&mut server, &message) {
-                    if config.debug {
+                    if server.config.debug {
                         eprintln!("[debug] <-- {}", reply);
                     }
                     if let Err(error) = rpc::write_message(&mut stdout, &reply) {

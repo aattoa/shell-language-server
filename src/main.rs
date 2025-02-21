@@ -3,6 +3,7 @@
 mod config;
 mod db;
 mod env;
+mod external;
 mod indexvec;
 mod lex;
 mod lsp;
@@ -14,24 +15,32 @@ mod shell;
 mod util;
 
 const HELP: &str = r"Options:
-  --help, -h       Display help information
-  --version, -v    Display version information
-  --no-env-path    Do not complete commands available through $PATH
-  --no-env-vars    Do not complete environment variable names
-  --no-env         Equivalent to --no-env-path --no-env-vars
-  --path=[arg]     Use the given argument instead of $PATH
-  --debug          Log every LSP request and response to stderr";
+  --help, -h        Display help information
+  --version, -v     Display version information
+  --no-env-path     Do not complete commands available through $PATH
+  --no-env-vars     Do not complete environment variable names
+  --no-env          Equivalent to --no-env-path --no-env-vars
+  --path=ARG        Use the given argument instead of $PATH
+  --shellcheck=ARG  Configure shellcheck executable path
+  --debug           Log every LSP request and response to stderr";
 
-fn bin_name() -> &'static str {
-    option_env!("CARGO_BIN_NAME").unwrap_or("shell-language-server")
-}
+const DESCRIPTION: &str = "A language server for shell scripts";
 
-fn pkg_name() -> &'static str {
-    option_env!("CARGO_PKG_NAME").unwrap_or_else(bin_name)
-}
+const BINARY_NAME: &str =
+    if let Some(name) = option_env!("CARGO_BIN_NAME") { name } else { "shell-language-server" };
 
-fn pkg_version() -> &'static str {
-    option_env!("CARGO_PKG_VERSION").unwrap_or("unknown")
+const PACKAGE_NAME: &str =
+    if let Some(name) = option_env!("CARGO_PKG_NAME") { name } else { BINARY_NAME };
+
+const PACKAGE_VERSION: &str =
+    if let Some(version) = option_env!("CARGO_PKG_VERSION") { version } else { "unknown" };
+
+fn boolean_arg(arg: &str) -> Option<bool> {
+    match arg {
+        "true" | "yes" => Some(true),
+        "false" | "no" => Some(false),
+        _ => None,
+    }
 }
 
 fn handle_command_line() -> config::Config {
@@ -51,20 +60,25 @@ fn handle_command_line() -> config::Config {
                 config.complete.env_vars = false;
             }
             "-h" | "--help" => {
-                println!("Usage: {} [options]\n{}", bin_name(), HELP);
+                println!("{DESCRIPTION}\n\nUsage: {BINARY_NAME} [options]\n\n{HELP}");
                 std::process::exit(0);
             }
             "-v" | "--version" => {
-                println!("{} version {}", pkg_name(), pkg_version());
+                println!("{PACKAGE_NAME} version {PACKAGE_VERSION}");
                 std::process::exit(0);
             }
-            "--path" => {
-                eprintln!("Missing argument for '--path'. Usage: '--path=value'");
+            "--path" | "--shellcheck" => {
+                eprintln!("Missing argument for '{flag}'. Usage: '{flag}=value'");
                 std::process::exit(1);
             }
             arg => {
                 if let Some(path) = arg.strip_prefix("--path=") {
-                    config.path = Some(path.to_string());
+                    config.path = Some(path.into());
+                }
+                else if let Some(path) = arg.strip_prefix("--shellcheck=") {
+                    config.shellcheck = boolean_arg(path)
+                        .map(config::Shellcheck::Enable)
+                        .unwrap_or_else(|| config::Shellcheck::Path(path.into()))
                 }
                 else {
                     eprintln!("Unrecognized argument: {arg}");
@@ -78,8 +92,6 @@ fn handle_command_line() -> config::Config {
 
 fn main() {
     let config = handle_command_line();
-    eprintln!("[debug] Started server.");
     let code = server::run(config);
-    eprintln!("[debug] Exiting normally.");
     std::process::exit(code);
 }

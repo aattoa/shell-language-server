@@ -577,12 +577,20 @@ fn parse_shebang(ctx: &mut Context) {
     }
 }
 
+fn collect_references(info: &mut db::DocumentInfo) {
+    info.references.sort_unstable_by_key(|symbol| symbol.reference.range.start);
+    for (index, symbol) in info.references.iter().enumerate() {
+        info.symbols[symbol.id].ref_indices.push(index as u32);
+    }
+}
+
 pub fn parse(input: &str) -> db::DocumentInfo {
     let mut ctx = Context::new(input);
     parse_shebang(&mut ctx);
     register_builtins(&mut ctx);
     skip_empty_lines(&mut ctx);
     extract_statements_until(&mut ctx, |_| false);
+    collect_references(&mut ctx.info);
     ctx.info
 }
 

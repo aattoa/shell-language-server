@@ -1,5 +1,5 @@
 use crate::indexvec::IndexVec;
-use crate::{define_index, lsp, parse, util};
+use crate::{define_index, lsp, util};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -113,13 +113,6 @@ impl Document {
     }
     pub fn edit(&mut self, range: lsp::Range, new_text: &str) {
         self.text.replace_range(text_range(&self.text, range), new_text);
-    }
-    pub fn analyze(&mut self) {
-        self.info = parse::parse(&self.text);
-        self.info.references.sort_unstable_by_key(|symbol| symbol.reference.range.start);
-        for (index, symbol) in self.info.references.iter().enumerate() {
-            self.info.symbols[symbol.id].ref_indices.push(index as u32);
-        }
     }
 }
 
