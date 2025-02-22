@@ -1,0 +1,91 @@
+.TH shell-language-server 1 shell-language-server-0.1.0
+
+.SH NAME
+shell-language-server
+
+.SH SYNOPSIS
+shell-language-server [option]...
+
+.SH DESCRIPTION
+A language server for shell scripts.
+
+.SH OPTIONS
+
+.TP
+\fB--help\fP, \fB-h\fP
+Display help information.
+
+.TP
+\fB--version\fP, \fB-v\fP
+Display version information.
+
+.TP
+.B --no-env-path
+Do not complete commands available through \fB$PATH\fP.
+
+.TP
+.B --no-env-vars
+Do not complete environment variable names.
+
+.TP
+.B --no-env
+Equivalent to \fB--no-env-path --no-env-vars\fP.
+
+.TP
+.B --path=\fIARG\fP
+Use the given argument instead of \fB$PATH\fP.
+
+.TP
+.B --exe=\fINAME\fB:\fIPATH\fP
+Specify the path to an executable. Can be specified multiple times.
+
+Valid values for \fINAME\fP are \fBshellcheck\fP, \fBshfmt\fP.
+
+.TP
+.B --shellcheck=\fIBOOL\fP
+Enable or disable shellcheck integration. Defaults to true.
+
+.TP
+.B --shfmt=\fIBOOL\fP
+Enable or disable shfmt integration. Defaults to false.
+
+.TP
+.B --debug
+Log every LSP request and response to standard error.
+
+.SH EXIT STATUS
+
+.TP
+0
+Success: everything went well.
+
+.TP
+1
+Unexpected exit: an exit notification was received before the corresponding shutdown notification.
+
+.TP
+2
+Transport error: failed to read or write LSP message.
+
+.TP
+3
+Invalid command line: could not parse one or more arguments.
+
+.SH EXAMPLES
+
+If you want the server to only be aware of executables located in \fB$HOME/scripts\fP and \fB/usr/bin\fP:
+
+$
+.B shell-language-server --path="$HOME/scripts":/usr/bin
+
+If you have installed shellcheck to a non-default location:
+
+$
+.B shell-language-server --exe=shellcheck:/path/to/executable
+
+.SH BUGS
+
+The parser is far from perfect, and various errors are to be expected.
+
+.SH AUTHOR
+Written by aattoa <aattoa@proton.me>
