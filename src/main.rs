@@ -1,5 +1,7 @@
 #![allow(unused_parens, dead_code)]
 
+use std::process::ExitCode;
+
 mod config;
 mod db;
 mod env;
@@ -37,28 +39,30 @@ const PACKAGE_NAME: &str =
 const PACKAGE_VERSION: &str =
     if let Some(version) = option_env!("CARGO_PKG_VERSION") { version } else { "unknown" };
 
-fn boolean_arg(arg: &str) -> bool {
+fn cli_error(error: impl std::fmt::Display) -> ExitCode {
+    eprintln!("Command line error: {error}");
+    ExitCode::from(3)
+}
+
+fn boolean_arg(arg: &str) -> Result<bool, ExitCode> {
     match arg {
-        "true" | "yes" | "on" | "1" => true,
-        "false" | "no" | "off" | "0" => false,
-        _ => {
-            eprintln!("Invalid boolean: '{arg}'");
-            std::process::exit(1);
-        }
+        "true" | "yes" | "on" | "1" => Ok(true),
+        "false" | "no" | "off" | "0" => Ok(false),
+        _ => Err(cli_error(format!("Invalid boolean: '{arg}'"))),
     }
 }
 
-fn handle_command_line() -> config::Config {
+fn parse_command_line() -> Result<config::Config, ExitCode> {
     let mut config = config::Config::default();
     for flag in std::env::args().skip(1) {
         match flag.as_str() {
             "-h" | "--help" => {
                 println!("{DESCRIPTION}\n\nUsage: {BINARY_NAME} [options]\n\n{HELP}");
-                std::process::exit(0);
+                return Err(ExitCode::from(0));
             }
             "-v" | "--version" => {
                 println!("{PACKAGE_NAME} version {PACKAGE_VERSION}");
-                std::process::exit(0);
+                return Err(ExitCode::from(0));
             }
             "--debug" => {
                 config.debug = true;
@@ -73,8 +77,9 @@ fn handle_command_line() -> config::Config {
                 config.complete.env_vars = false;
             }
             "--path" | "--exe" | "--shellcheck" | "--shfmt" => {
-                eprintln!("Missing argument for '{flag}'. Usage: '{flag}=value'");
-                std::process::exit(1);
+                return Err(cli_error(format!(
+                    "Missing argument for '{flag}'. Usage: '{flag}=value'"
+                )));
             }
             arg => {
                 if let Some(arg) = arg.strip_prefix("--path=") {
@@ -83,39 +88,37 @@ fn handle_command_line() -> config::Config {
                 else if let Some(arg) = arg.strip_prefix("--exe=") {
                     let Some((name, path)) = arg.split_once(':')
                     else {
-                        eprintln!("Invalid argument for '--exe', expected NAME:PATH");
-                        std::process::exit(1);
+                        return Err(cli_error("Invalid argument for '--exe', expected NAME:PATH"));
                     };
                     let exe = match name {
                         "shellcheck" => &mut config.executables.shellcheck,
                         "shfmt" => &mut config.executables.shfmt,
                         _ => {
-                            eprintln!(
+                            return Err(cli_error(format!(
                                 "Unrecognized name: '{name}'. Recognized names are shellcheck, shfmt."
-                            );
-                            std::process::exit(1);
+                            )));
                         }
                     };
                     *exe = std::borrow::Cow::Owned(path.into());
                 }
                 else if let Some(arg) = arg.strip_prefix("--shellcheck=") {
-                    config.integration.shellcheck = boolean_arg(arg);
+                    config.integration.shellcheck = boolean_arg(arg)?;
                 }
                 else if let Some(arg) = arg.strip_prefix("--shfmt=") {
-                    config.integration.shfmt = boolean_arg(arg);
+                    config.integration.shfmt = boolean_arg(arg)?;
                 }
                 else {
-                    eprintln!("Unrecognized argument: {arg}");
-                    std::process::exit(1);
+                    return Err(cli_error(format!("Unrecognized argument: {arg}")));
                 }
             }
         }
     }
-    config
+    Ok(config)
 }
 
-fn main() {
-    let config = handle_command_line();
-    let code = server::run(config);
-    std::process::exit(code);
+fn main() -> ExitCode {
+    match parse_command_line() {
+        Ok(config) => server::run(config),
+        Err(code) => code,
+    }
 }

@@ -1,7 +1,8 @@
 use crate::config::Config;
 use crate::{db, env, external, lsp, parse, rpc};
 use serde_json::{from_value, json};
-use std::cmp::Ordering;
+use std::process::ExitCode;
+
 type Json = serde_json::Value;
 
 #[derive(Default)]
@@ -9,7 +10,7 @@ struct Server {
     db: db::Database,
     config: Config,
     initialized: bool,
-    exit_code: Option<i32>,
+    exit_code: Option<ExitCode>,
 }
 
 fn server_capabilities(config: &Config) -> Json {
@@ -37,15 +38,13 @@ fn get_document<'db>(
     identifier: &lsp::DocumentIdentifier,
 ) -> Result<&'db db::Document, rpc::Error> {
     db.document_paths.get(&identifier.uri.path).map(|&id| &db.documents[id]).ok_or_else(|| {
-        rpc::Error::invalid_params(format!(
-            "Unopened document referenced: {}",
-            identifier.uri.path.display()
-        ))
+        let path = identifier.uri.path.display();
+        rpc::Error::invalid_params(format!("Unopened document referenced: '{path}'",))
     })
 }
 
-fn compare_position(position: lsp::Position, range: lsp::Range) -> Ordering {
-    if range.contains(position) { Ordering::Equal } else { range.start.cmp(&position) }
+fn compare_position(position: lsp::Position, range: lsp::Range) -> std::cmp::Ordering {
+    if range.contains(position) { std::cmp::Ordering::Equal } else { range.start.cmp(&position) }
 }
 
 fn find_symbol(info: &db::DocumentInfo, position: lsp::Position) -> Option<db::SymbolReference> {
@@ -332,7 +331,7 @@ fn handle_notification(server: &mut Server, method: &str, params: Json) -> Resul
     match method {
         "initialized" => Ok(()),
         "exit" => {
-            server.exit_code = Some(server.initialized as i32);
+            server.exit_code = Some(ExitCode::from(server.initialized as u8));
             Ok(())
         }
         "textDocument/didOpen" => {
@@ -397,7 +396,7 @@ fn handle_message(server: &mut Server, message: &str) -> Option<String> {
     reply.map(|reply| serde_json::to_string(&reply).expect("Reply serialization failed"))
 }
 
-pub fn run(config: Config) -> i32 {
+pub fn run(config: Config) -> ExitCode {
     let mut server = Server { config, ..Server::default() };
     let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
@@ -417,13 +416,13 @@ pub fn run(config: Config) -> i32 {
                     }
                     if let Err(error) = rpc::write_message(&mut stdout, &reply) {
                         eprintln!("[debug] Unable to write reply: {error}");
-                        return -1;
+                        return ExitCode::from(2);
                     }
                 }
             }
             Err(error) => {
                 eprintln!("[debug] Unable to read message: {error}");
-                return -1;
+                return ExitCode::from(2);
             }
         }
     }
