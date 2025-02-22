@@ -45,13 +45,13 @@ pub enum Severity {
     Hint = 4,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct DiagnosticRelated {
     pub location: Location,
     pub message: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct Diagnostic {
     pub range: Range,
     pub severity: Severity,
@@ -62,19 +62,19 @@ pub struct Diagnostic {
     pub related: Vec<DiagnosticRelated>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Deserialize)]
 pub struct DocumentIdentifier {
     pub uri: DocumentURI,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Deserialize)]
 pub struct VersionedDocumentIdentifier {
     #[serde(flatten)]
     pub identifier: DocumentIdentifier,
     pub version: i32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Deserialize)]
 pub struct DocumentItem {
     pub uri: DocumentURI,
     #[serde(rename = "languageId")]
@@ -83,25 +83,25 @@ pub struct DocumentItem {
     pub version: i32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ContentChange {
     pub range: Range,
     pub text: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct DidOpenDocumentParams {
     #[serde(rename = "textDocument")]
     pub document: DocumentItem,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct DidCloseDocumentParams {
     #[serde(rename = "textDocument")]
     pub document: DocumentIdentifier,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct DidChangeDocumentParams {
     #[serde(rename = "textDocument")]
     pub document: VersionedDocumentIdentifier,
@@ -109,20 +109,20 @@ pub struct DidChangeDocumentParams {
     pub changes: Vec<ContentChange>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct PullDiagnosticParams {
     #[serde(rename = "textDocument")]
     pub document: DocumentIdentifier,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct PositionParams {
     #[serde(rename = "textDocument")]
     pub document: DocumentIdentifier,
     pub position: Position,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct RenameParams {
     #[serde(flatten)]
     pub position_params: PositionParams,
@@ -130,26 +130,25 @@ pub struct RenameParams {
     pub new_name: String,
 }
 
-#[derive(Clone, Debug)]
 pub enum MarkupKind {
     Plaintext,
     Markdown,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Serialize)]
 pub struct MarkupContent {
     pub kind: MarkupKind,
     pub value: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Serialize)]
 pub struct TextEdit {
     pub range: Range,
     #[serde(rename = "newText")]
     pub new_text: String,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy)]
 pub enum CompletionItemKind {
     Text = 1,
     Function = 3,
@@ -159,7 +158,7 @@ pub enum CompletionItemKind {
     Directory = 18,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Serialize)]
 pub struct CompletionItem {
     pub label: String,
     pub kind: CompletionItemKind,
@@ -169,6 +168,21 @@ pub struct CompletionItem {
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub documentation: Option<MarkupContent>,
+}
+
+#[derive(Deserialize)]
+pub struct FormattingOptions {
+    #[serde(rename = "tabSize")]
+    pub tab_size: usize,
+    #[serde(rename = "insertSpaces")]
+    pub use_spaces: bool,
+}
+
+#[derive(Deserialize)]
+pub struct FormattingParams {
+    #[serde(rename = "textDocument")]
+    pub document: DocumentIdentifier,
+    pub options: FormattingOptions,
 }
 
 impl Position {

@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 #[derive(Clone, Copy)]
 pub struct Complete {
     pub env_path: bool,
@@ -11,24 +13,29 @@ impl Default for Complete {
 }
 
 #[derive(Clone)]
-pub enum Shellcheck {
-    Enable(bool),
-    Path(Box<str>),
+pub struct Executables {
+    pub shellcheck: Cow<'static, str>,
+    pub shfmt: Cow<'static, str>,
 }
 
-impl Default for Shellcheck {
+impl Default for Executables {
     fn default() -> Self {
-        Self::Enable(true)
+        Self {
+            shellcheck: Cow::Borrowed("/usr/bin/shellcheck"),
+            shfmt: Cow::Borrowed("/usr/bin/shfmt"),
+        }
     }
 }
 
-impl Shellcheck {
-    pub fn path(&self) -> Option<&str> {
-        match self {
-            Shellcheck::Enable(false) => None,
-            Shellcheck::Enable(true) => Some("/usr/bin/shellcheck"),
-            Shellcheck::Path(path) => Some(path),
-        }
+#[derive(Clone, Copy)]
+pub struct Integration {
+    pub shellcheck: bool,
+    pub shfmt: bool,
+}
+
+impl Default for Integration {
+    fn default() -> Self {
+        Self { shellcheck: true, shfmt: false }
     }
 }
 
@@ -37,5 +44,6 @@ pub struct Config {
     pub debug: bool,
     pub complete: Complete,
     pub path: Option<Box<str>>,
-    pub shellcheck: Shellcheck,
+    pub executables: Executables,
+    pub integration: Integration,
 }

@@ -1,4 +1,4 @@
-use crate::config::{self, Config};
+use crate::config::Config;
 use crate::{db, env, external, lsp, parse, rpc};
 use serde_json::{from_value, json};
 use std::cmp::Ordering;
@@ -12,7 +12,7 @@ struct Server {
     exit_code: Option<i32>,
 }
 
-fn server_capabilities() -> Json {
+fn server_capabilities(config: &Config) -> Json {
     json!({
         "textDocumentSync": {
             "openClose": true,
@@ -26,6 +26,7 @@ fn server_capabilities() -> Json {
         "definitionProvider": true,
         "referencesProvider": true,
         "documentHighlightProvider": true,
+        "documentFormattingProvider": config.integration.shfmt,
         "renameProvider": { "prepareProvider": true },
         "completionProvider": {},
     })
@@ -192,8 +193,8 @@ fn symbol_hover(document: &db::Document, symbol: db::SymbolReference) -> Json {
 
 fn analyze(document: &mut db::Document, config: &Config) {
     document.info = parse::parse(&document.text);
-    if let Some(path) = config.shellcheck.path() {
-        match external::shellcheck::analyze(path, &document.text) {
+    if config.integration.shellcheck {
+        match external::shellcheck::analyze(&config.executables.shellcheck, &document.text) {
             Ok(external::shellcheck::Info { diagnostics }) => {
                 document.info.diagnostics.extend(diagnostics)
             }
@@ -214,12 +215,21 @@ fn initialize(server: &mut Server) {
     if server.config.complete.env_vars {
         server.db.environment_variables = env::collect_variables();
     }
-    if let Some(path) = server.config.shellcheck.path() {
+    if server.config.integration.shellcheck {
+        let path: &str = &server.config.executables.shellcheck;
         if !std::path::Path::new(path).exists() {
             eprintln!("[debug] Invalid shellcheck path: {path}");
-            server.config.shellcheck = config::Shellcheck::Enable(false);
+            server.config.integration.shellcheck = false;
         }
     }
+    if server.config.integration.shfmt {
+        let path: &str = &server.config.executables.shfmt;
+        if !std::path::Path::new(path).exists() {
+            eprintln!("[debug] Invalid shfmt path: {path}");
+            server.config.integration.shfmt = false;
+        }
+    }
+    // todo: deduplicate
 }
 
 fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Json, rpc::Error> {
@@ -227,7 +237,7 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
         "initialize" => {
             initialize(server);
             Ok(json!({
-                "capabilities": server_capabilities(),
+                "capabilities": server_capabilities(&server.config),
                 "serverInfo": { "name": "shell-language-server" },
             }))
         }
@@ -295,7 +305,23 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
                 lsp::CompletionItemKind::Function => {
                     Ok(function_completions(&server.db, document, range, prefix))
                 }
-                _ => Err(rpc::Error::new(rpc::ErrorCode::InternalError, "completion failure")),
+                _ => Err(rpc::Error::internal_error("completion failure")),
+            }
+        }
+        "textDocument/formatting" => {
+            let params: lsp::FormattingParams = from_value(params)?;
+            let document = get_document(&server.db, &params.document)?;
+            match external::shfmt::format(
+                params.options,
+                &server.config.executables.shfmt,
+                &document.text,
+            ) {
+                Ok(new_text) => {
+                    let start = lsp::Position { line: 0, character: 0 };
+                    let end = lsp::Position { line: u32::MAX, character: u32::MAX };
+                    Ok(json!([lsp::TextEdit { range: lsp::Range { start, end }, new_text }]))
+                }
+                Err(error) => Err(rpc::Error::internal_error(error.to_string())),
             }
         }
         _ => Err(rpc::Error::method_not_found(method)),

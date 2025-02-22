@@ -134,6 +134,9 @@ impl Error {
     pub fn invalid_params(message: impl Into<String>) -> Error {
         Error::new(ErrorCode::InvalidParams, message)
     }
+    pub fn internal_error(message: impl Into<String>) -> Error {
+        Error::new(ErrorCode::InternalError, message)
+    }
     pub fn method_not_found(method: &str) -> Error {
         Error::new(ErrorCode::MethodNotFound, format!("Unhandled method: {method}"))
     }

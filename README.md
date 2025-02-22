@@ -34,6 +34,8 @@ useful.
 - Complete variable, function, and command names
 - Diagnostics reporting
 - Annotations
+- `shellcheck` integration
+- `shfmt` integration
 
 ## Planned features
 
@@ -76,7 +78,9 @@ The server can be configured with the following command line arguments:
 - `--no-env-vars`: Do not complete environment variable names.
 - `--no-env`: Equivalent to `--no-env-path --no-env-vars`.
 - `--path=ARG`: Use the given argument instead of `$PATH`.
-- `--shellcheck=ARG`: Configure shellcheck executable path.
+- `--exe=NAME:PATH`: Specify the path to an executable. Can be specified multiple times.
+- `--shellcheck=BOOL`: Enable or disable shellcheck integration. Defaults to true.
+- `--shfmt=BOOL`: Enable or disable shfmt integration. Defaults to false.
 - `--debug`: Log every LSP request and response to `stderr`.
 
 ## Dependencies
