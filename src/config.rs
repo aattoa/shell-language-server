@@ -1,3 +1,4 @@
+use crate::shell::Shell;
 use std::borrow::Cow;
 
 #[derive(Clone, Copy)]
@@ -46,4 +47,5 @@ pub struct Config {
     pub path: Option<Box<str>>,
     pub executables: Executables,
     pub integration: Integration,
+    pub default_shell: Shell,
 }

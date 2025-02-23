@@ -1,8 +1,10 @@
 use crate::lsp;
+use crate::shell::Shell;
 
 pub fn format(
+    shell: Shell,
     options: lsp::FormattingOptions,
-    executable_path: &str,
+    shfmt_path: &str,
     document_text: &str,
 ) -> std::io::Result<String> {
     use std::io::{Read, Write};
@@ -11,8 +13,16 @@ pub fn format(
     // shfmt uses tabs if 0 is given as the indent width.
     let indent = if options.use_spaces { options.tab_size } else { 0 };
 
-    let mut child = Command::new(executable_path)
+    // Treat unsupported shells as POSIX, since shfmt can still format with decent accuracy.
+    let dialect = match shell {
+        Shell::Bash => "bash",
+        Shell::Ksh => "mksh",
+        _ => "posix",
+    };
+
+    let mut child = Command::new(shfmt_path)
         .arg(format!("--indent={indent}"))
+        .arg(format!("--language-dialect={dialect}"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()?;

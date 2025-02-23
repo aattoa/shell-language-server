@@ -17,16 +17,17 @@ mod shell;
 mod util;
 
 const HELP: &str = r"Options:
-  --help, -h         Display help information.
-  --version, -v      Display version information.
-  --no-env-path      Do not complete commands available through $PATH.
-  --no-env-vars      Do not complete environment variable names.
-  --no-env           Equivalent to --no-env-path --no-env-vars.
-  --path=ARG         Use the given argument instead of $PATH.
-  --exe=NAME:PATH    Specify the path to an executable. Can be specified multiple times.
-  --shellcheck=BOOL  Enable or disable shellcheck integration. Defaults to true.
-  --shfmt=BOOL       Enable or disable shfmt integration. Defaults to false.
-  --debug            Log every LSP request and response to stderr.";
+  --help, -h          Display help information.
+  --version, -v       Display version information.
+  --no-env-path       Do not complete commands available through $PATH.
+  --no-env-vars       Do not complete environment variable names.
+  --no-env            Equivalent to --no-env-path --no-env-vars.
+  --path=ARG          Use the given argument instead of $PATH.
+  --default-shell=SH  Default to the given shell when a script has no shebang.
+  --exe=NAME:PATH     Specify the path to an executable. Can be specified multiple times.
+  --shellcheck=BOOL   Enable or disable shellcheck integration. Defaults to true.
+  --shfmt=BOOL        Enable or disable shfmt integration. Defaults to false.
+  --debug             Log every LSP request and response to standard error.";
 
 const DESCRIPTION: &str = "A language server for shell scripts";
 
@@ -76,7 +77,7 @@ fn parse_command_line() -> Result<config::Config, ExitCode> {
             "--no-env-vars" => {
                 config.complete.env_vars = false;
             }
-            "--path" | "--exe" | "--shellcheck" | "--shfmt" => {
+            "--path" | "--exe" | "--shellcheck" | "--shfmt" | "--default-shell" => {
                 return Err(cli_error(format!(
                     "Missing argument for '{flag}'. Usage: '{flag}=value'"
                 )));
@@ -106,6 +107,12 @@ fn parse_command_line() -> Result<config::Config, ExitCode> {
                 }
                 else if let Some(arg) = arg.strip_prefix("--shfmt=") {
                     config.integration.shfmt = boolean_arg(arg)?;
+                }
+                else if let Some(arg) = arg.strip_prefix("--default-shell=") {
+                    match shell::parse_shell_name(arg) {
+                        Ok(shell) => config.default_shell = shell,
+                        Err(error) => return Err(cli_error(error)),
+                    }
                 }
                 else {
                     return Err(cli_error(format!("Unrecognized argument: {arg}")));

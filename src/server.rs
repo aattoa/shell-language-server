@@ -191,9 +191,13 @@ fn symbol_hover(document: &db::Document, symbol: db::SymbolReference) -> Json {
 }
 
 fn analyze(document: &mut db::Document, config: &Config) {
-    document.info = parse::parse(&document.text);
+    document.info = parse::parse(&document.text, config);
     if config.integration.shellcheck {
-        match external::shellcheck::analyze(&config.executables.shellcheck, &document.text) {
+        match external::shellcheck::analyze(
+            document.info.shell,
+            &config.executables.shellcheck,
+            &document.text,
+        ) {
             Ok(external::shellcheck::Info { diagnostics }) => {
                 document.info.diagnostics.extend(diagnostics)
             }
@@ -311,6 +315,7 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
             let params: lsp::FormattingParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
             match external::shfmt::format(
+                document.info.shell,
                 params.options,
                 &server.config.executables.shfmt,
                 &document.text,

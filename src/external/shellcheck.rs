@@ -1,4 +1,5 @@
 use crate::lsp;
+use crate::shell::Shell;
 
 struct LevelVisitor;
 
@@ -54,21 +55,25 @@ pub struct Info {
     pub diagnostics: Vec<lsp::Diagnostic>,
 }
 
-pub fn analyze(path: &str, document: &str) -> std::io::Result<Info> {
-    use std::io::Write;
+pub fn analyze(shell: Shell, shellcheck_path: &str, document_text: &str) -> std::io::Result<Info> {
     use std::process::{Command, Stdio};
 
-    let mut child = Command::new(path)
-        .args(["--format=json", "-"])
+    // Treat unsupported shells as POSIX, since shellcheck can still provide useful hints.
+    let shell = match shell {
+        Shell::Bash => "--shell=bash",
+        Shell::Ksh => "--shell=ksh",
+        _ => "--shell=sh",
+    };
+
+    let mut child = Command::new(shellcheck_path)
+        .args([shell, "--format=json", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()?;
 
-    child.stdin.take().unwrap().write_all(document.as_bytes())?;
-    let reader = std::io::BufReader::new(child.stdout.take().unwrap());
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), document_text.as_bytes())?;
+    let comments: Vec<Comment> = serde_json::from_reader(child.stdout.take().unwrap())?;
 
     child.wait()?;
-
-    let comments: Vec<Comment> = serde_json::from_reader(reader)?;
     Ok(Info { diagnostics: comments.into_iter().map(diagnostic).collect() })
 }

@@ -78,10 +78,13 @@ The server can be configured with the following command line arguments:
 - `--no-env-vars`: Do not complete environment variable names.
 - `--no-env`: Equivalent to `--no-env-path --no-env-vars`.
 - `--path=ARG`: Use the given argument instead of `$PATH`.
+- `--default-shell=SH`: Default to the given shell when a script has no shebang.
 - `--exe=NAME:PATH`: Specify the path to an executable. Can be specified multiple times.
 - `--shellcheck=BOOL`: Enable or disable shellcheck integration. Defaults to true.
 - `--shfmt=BOOL`: Enable or disable shfmt integration. Defaults to false.
 - `--debug`: Log every LSP request and response to `stderr`.
+
+Consult the man page for examples and more information.
 
 ## Dependencies
 

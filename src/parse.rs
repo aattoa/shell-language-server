@@ -1,5 +1,6 @@
+use crate::config::Config;
 use crate::lex::{self, Lexer, Token, TokenKind};
-use crate::shell::Shell;
+use crate::shell::{self, Shell};
 use crate::{db, lsp, util};
 use std::collections::HashMap;
 
@@ -8,7 +9,6 @@ type ParseResult<T> = Result<T, lsp::Diagnostic>;
 struct Context<'a> {
     info: db::DocumentInfo,
     lexer: Lexer<'a>,
-    shell: Shell,
     document: &'a str,
     commands: HashMap<String, db::SymbolId>,
     variables: HashMap<String, db::SymbolId>,
@@ -16,11 +16,10 @@ struct Context<'a> {
 }
 
 impl<'a> Context<'a> {
-    fn new(document: &'a str) -> Self {
+    fn new(document: &'a str, config: &Config) -> Self {
         Self {
-            info: db::DocumentInfo::default(),
+            info: db::DocumentInfo { shell: config.default_shell, ..db::DocumentInfo::default() },
             lexer: Lexer::new(document),
-            shell: Shell::Posix,
             document,
             commands: HashMap::new(),
             variables: HashMap::new(),
@@ -429,7 +428,7 @@ fn extract_builtin_unset(ctx: &mut Context) -> ParseResult<()> {
 }
 
 fn extract_function(ctx: &mut Context, word: Token) -> ParseResult<()> {
-    if !is_identifier(word.view.string(ctx.document), ctx.shell) {
+    if !is_identifier(word.view.string(ctx.document), ctx.info.shell) {
         ctx.warn(word.range, "Invalid function name");
     }
     define_function(ctx, word);
@@ -566,8 +565,8 @@ fn skip_to_next_recovery_point(ctx: &mut Context) {
 fn parse_shebang(ctx: &mut Context) {
     if let Some(comment) = ctx.lexer.next_if_kind(TokenKind::Comment) {
         if let Some(shebang) = comment.view.string(ctx.document).strip_prefix("#!") {
-            match shebang.parse() {
-                Ok(shell) => ctx.shell = shell,
+            match shell::parse_shebang(shebang) {
+                Ok(shell) => ctx.info.shell = shell,
                 Err(error) => ctx.warn(comment.range, error),
             }
         }
@@ -584,8 +583,8 @@ fn collect_references(info: &mut db::DocumentInfo) {
     }
 }
 
-pub fn parse(input: &str) -> db::DocumentInfo {
-    let mut ctx = Context::new(input);
+pub fn parse(input: &str, config: &Config) -> db::DocumentInfo {
+    let mut ctx = Context::new(input, config);
     parse_shebang(&mut ctx);
     register_builtins(&mut ctx);
     skip_empty_lines(&mut ctx);
@@ -632,9 +631,10 @@ fn register_builtins(ctx: &mut Context) {
 #[cfg(test)]
 mod tests {
     use crate::assert_let;
+    use crate::config::Config;
 
     fn diagnostics(input: &str) -> Vec<super::lsp::Diagnostic> {
-        super::parse(input).diagnostics
+        super::parse(input, &Config::default()).diagnostics
     }
 
     #[test]

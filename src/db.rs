@@ -1,4 +1,5 @@
 use crate::indexvec::IndexVec;
+use crate::shell::Shell;
 use crate::{define_index, lsp, util};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -53,6 +54,7 @@ pub struct DocumentInfo {
     pub diagnostics: Vec<lsp::Diagnostic>,
     pub references: Vec<SymbolReference>,
     pub symbols: IndexVec<Symbol, SymbolId>,
+    pub shell: Shell,
 }
 
 #[derive(Default)]
