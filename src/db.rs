@@ -49,11 +49,18 @@ pub struct SymbolReference {
     pub id: SymbolId,
 }
 
+pub struct Action {
+    pub title: String,
+    pub edits: Vec<lsp::TextEdit>,
+    pub range: lsp::Range,
+}
+
 #[derive(Default)]
 pub struct DocumentInfo {
     pub diagnostics: Vec<lsp::Diagnostic>,
     pub references: Vec<SymbolReference>,
     pub symbols: IndexVec<Symbol, SymbolId>,
+    pub actions: Vec<Action>,
     pub shell: Shell,
 }
 

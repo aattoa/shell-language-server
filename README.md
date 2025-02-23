@@ -31,16 +31,16 @@ useful.
 - Highlight references
 - Rename variables and functions
 - Complete variable, function, and command names
+- Code actions
 - Annotations
 - Diagnostics reporting
-- Additional diagnostics through `shellcheck` integration
-- Document and range formatting through `shfmt` integration
+- Additional diagnostics through [shellcheck](https://www.shellcheck.net) integration
+- Document and range formatting through [shfmt](https://github.com/mvdan/sh) integration
 
 ## Planned features
 
 - Document symbols
 - Signature help
-- Code actions (e.g. replace a command name with its absolute path)
 - Command argument completion
 - Imports and exports
 - Syntax highlighting

@@ -30,6 +30,7 @@ fn server_capabilities(config: &Config) -> Json {
         "documentHighlightProvider": true,
         "documentFormattingProvider": config.integration.shfmt,
         "documentRangeFormattingProvider": config.integration.shfmt,
+        "codeActionProvider": config.integration.shellcheck,
         "renameProvider": { "prepareProvider": true },
         "completionProvider": {},
     })
@@ -200,8 +201,9 @@ fn analyze(document: &mut db::Document, config: &Config) {
             &config.executables.shellcheck,
             &document.text,
         ) {
-            Ok(external::shellcheck::Info { diagnostics }) => {
-                document.info.diagnostics.extend(diagnostics)
+            Ok(external::shellcheck::Info { diagnostics, actions }) => {
+                document.info.diagnostics.extend(diagnostics);
+                document.info.actions.extend(actions);
             }
             Err(error) => eprintln!("[debug] Failed to run shellcheck: {error}"),
         }
@@ -344,6 +346,20 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
                 &document.text[db::text_range(&document.text, params.range)],
             )?;
             Ok(json!([lsp::TextEdit { range: params.range, new_text }]))
+        }
+        "textDocument/codeAction" => {
+            let params: lsp::CodeActionParams = from_value(params)?;
+            Ok((get_document(&server.db, &params.document)?.info.actions.iter())
+                .filter(|action| {
+                    action.range.start <= params.range.start && params.range.end <= action.range.end
+                })
+                .map(|action| {
+                    json!({
+                        "title": action.title,
+                        "edit": { "changes": { params.document.uri.to_string(): action.edits } }
+                    })
+                })
+                .collect())
         }
         _ => Err(rpc::Error::method_not_found(method)),
     }

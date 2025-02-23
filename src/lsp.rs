@@ -83,7 +83,7 @@ pub struct DocumentItem {
     pub version: i32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 pub struct ContentChange {
     pub range: Range,
     pub text: String,
@@ -141,7 +141,7 @@ pub struct MarkupContent {
     pub value: String,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct TextEdit {
     pub range: Range,
     #[serde(rename = "newText")]
@@ -189,6 +189,13 @@ pub struct FormattingParams {
 pub struct RangeFormattingParams {
     #[serde(flatten)]
     pub format: FormattingParams,
+    pub range: Range,
+}
+
+#[derive(Deserialize)]
+pub struct CodeActionParams {
+    #[serde(rename = "textDocument")]
+    pub document: DocumentIdentifier,
     pub range: Range,
 }
 
