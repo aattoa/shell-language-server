@@ -71,7 +71,7 @@ pub struct Database {
     pub environment_variables: Vec<String>,
 }
 
-fn text_range(text: &str, range: lsp::Range) -> std::ops::Range<usize> {
+pub fn text_range(text: &str, range: lsp::Range) -> std::ops::Range<usize> {
     let mut chars = text.chars();
     let mut begin = 0;
 

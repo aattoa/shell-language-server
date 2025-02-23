@@ -10,8 +10,7 @@ Protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol), which is
 based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
 
 Note that the project is far from done, and in many cases will not work
-perfectly. Several shells are recognized, but they are all treated as POSIX
-shell for now. Despite these limitations, the language server is already
+perfectly. Despite some limitations, the language server is already
 useful.
 
 ## Table of contents
@@ -32,10 +31,10 @@ useful.
 - Highlight references
 - Rename variables and functions
 - Complete variable, function, and command names
-- Diagnostics reporting
 - Annotations
-- `shellcheck` integration
-- `shfmt` integration
+- Diagnostics reporting
+- Additional diagnostics through `shellcheck` integration
+- Document and range formatting through `shfmt` integration
 
 ## Planned features
 

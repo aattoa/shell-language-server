@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::shell::Shell;
 use crate::{db, env, external, lsp, parse, rpc};
 use serde_json::{from_value, json};
 use std::process::ExitCode;
@@ -28,6 +29,7 @@ fn server_capabilities(config: &Config) -> Json {
         "referencesProvider": true,
         "documentHighlightProvider": true,
         "documentFormattingProvider": config.integration.shfmt,
+        "documentRangeFormattingProvider": config.integration.shfmt,
         "renameProvider": { "prepareProvider": true },
         "completionProvider": {},
     })
@@ -206,6 +208,16 @@ fn analyze(document: &mut db::Document, config: &Config) {
     }
 }
 
+fn format(
+    shell: Shell,
+    options: lsp::FormattingOptions,
+    shfmt_path: &str,
+    document_text: &str,
+) -> Result<String, rpc::Error> {
+    external::shfmt::format(shell, options, shfmt_path, document_text)
+        .map_err(|error| rpc::Error::internal_error(error.to_string()))
+}
+
 fn initialize(server: &mut Server) {
     if std::mem::replace(&mut server.initialized, true) {
         eprintln!("[debug] Received initialize request when initialized");
@@ -314,19 +326,24 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
         "textDocument/formatting" => {
             let params: lsp::FormattingParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
-            match external::shfmt::format(
+            let new_text = format(
                 document.info.shell,
                 params.options,
                 &server.config.executables.shfmt,
                 &document.text,
-            ) {
-                Ok(new_text) => {
-                    let start = lsp::Position { line: 0, character: 0 };
-                    let end = lsp::Position { line: u32::MAX, character: u32::MAX };
-                    Ok(json!([lsp::TextEdit { range: lsp::Range { start, end }, new_text }]))
-                }
-                Err(error) => Err(rpc::Error::internal_error(error.to_string())),
-            }
+            )?;
+            Ok(json!([lsp::TextEdit { range: lsp::Range::MAX, new_text }]))
+        }
+        "textDocument/rangeFormatting" => {
+            let params: lsp::RangeFormattingParams = from_value(params)?;
+            let document = get_document(&server.db, &params.format.document)?;
+            let new_text = format(
+                document.info.shell,
+                params.format.options,
+                &server.config.executables.shfmt,
+                &document.text[db::text_range(&document.text, params.range)],
+            )?;
+            Ok(json!([lsp::TextEdit { range: params.range, new_text }]))
         }
         _ => Err(rpc::Error::method_not_found(method)),
     }

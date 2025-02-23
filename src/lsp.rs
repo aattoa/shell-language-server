@@ -185,6 +185,13 @@ pub struct FormattingParams {
     pub options: FormattingOptions,
 }
 
+#[derive(Deserialize)]
+pub struct RangeFormattingParams {
+    #[serde(flatten)]
+    pub format: FormattingParams,
+    pub range: Range,
+}
+
 impl Position {
     pub fn advance(&mut self, char: char) {
         if char == '\n' {
@@ -198,6 +205,10 @@ impl Position {
 }
 
 impl Range {
+    pub const MAX: Self = Self {
+        start: Position { line: 0, character: 0 },
+        end: Position { line: u32::MAX, character: u32::MAX },
+    };
     pub fn new(start: Position, end: Position) -> Self {
         Self { start, end }
     }
