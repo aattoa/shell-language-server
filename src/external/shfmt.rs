@@ -25,12 +25,19 @@ pub fn format(
         .arg(format!("--language-dialect={dialect}"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()?;
 
-    child.stdin.take().unwrap().write_all(document_text.as_bytes())?;
-
     let mut string = String::new();
+    child.stdin.take().unwrap().write_all(document_text.as_bytes())?;
     child.stdout.take().unwrap().read_to_string(&mut string)?;
-    child.wait()?;
-    Ok(string)
+
+    if child.wait()?.success() {
+        Ok(string)
+    }
+    else {
+        let mut error = String::new();
+        child.stderr.take().unwrap().read_to_string(&mut error)?;
+        Err(std::io::Error::other(error))
+    }
 }
