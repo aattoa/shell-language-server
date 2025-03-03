@@ -7,40 +7,25 @@ use std::path::{Path, PathBuf};
 define_index!(pub SymbolId as u32);
 define_index!(pub DocumentId as u32);
 
-#[derive(Clone, Debug)]
-pub struct Identifier {
-    pub name: String,
-    pub range: lsp::Range,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum Annotation {
-    View(util::View),
-    Str(&'static str),
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Annotations {
-    pub desc: Option<Annotation>,
-    pub exit: Option<Annotation>,
-    pub stdin: Option<Annotation>,
-    pub stdout: Option<Annotation>,
-    pub stderr: Option<Annotation>,
-    pub params: Vec<Annotation>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SymbolKind {
-    Variable,
-    Command,
     Builtin,
+    UnknownCommand,
+    KnownCommand {
+        path: PathBuf,
+    },
+    Variable {
+        description: Option<String>,
+    },
+    Function {
+        description: Option<String>,
+        parameters: Vec<util::View>,
+    },
 }
 
 pub struct Symbol {
     pub name: String,
     pub kind: SymbolKind,
     pub ref_indices: Vec<u32>,
-    pub annotations: Annotations,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -74,8 +59,6 @@ pub struct Document {
 pub struct Database {
     pub documents: IndexVec<Document, DocumentId>,
     pub document_paths: HashMap<PathBuf, DocumentId>,
-    pub path_executables: Vec<String>,
-    pub environment_variables: Vec<String>,
 }
 
 pub fn text_range(text: &str, range: lsp::Range) -> std::ops::Range<usize> {
@@ -125,24 +108,9 @@ impl Document {
     }
 }
 
-impl Annotation {
-    pub fn string(self, document: &str) -> &str {
-        match self {
-            Annotation::View(view) => view.string(document),
-            Annotation::Str(str) => str,
-        }
-    }
-}
-
 impl Symbol {
-    pub fn new(name: String, kind: SymbolKind, annotations: Annotations) -> Self {
-        Self { name, kind, annotations, ref_indices: Vec::new() }
-    }
-}
-
-impl PartialEq for Identifier {
-    fn eq(&self, other: &Identifier) -> bool {
-        self.name == other.name
+    pub fn new(name: String, kind: SymbolKind) -> Self {
+        Self { name, kind, ref_indices: Vec::new() }
     }
 }
 

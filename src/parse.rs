@@ -1,7 +1,8 @@
 use crate::config::Config;
 use crate::lex::{self, Lexer, Token, TokenKind};
 use crate::shell::{self, Shell};
-use crate::{db, lsp, util};
+use crate::{db, env, lsp, util};
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 type ParseResult<T> = Result<T, lsp::Diagnostic>;
@@ -12,7 +13,8 @@ struct Context<'a> {
     document: &'a str,
     commands: HashMap<String, db::SymbolId>,
     variables: HashMap<String, db::SymbolId>,
-    annotations: db::Annotations,
+    param_annotations: Vec<util::View>,
+    desc_annotation: Option<String>,
 }
 
 impl<'a> Context<'a> {
@@ -23,7 +25,8 @@ impl<'a> Context<'a> {
             document,
             commands: HashMap::new(),
             variables: HashMap::new(),
-            annotations: db::Annotations::default(),
+            param_annotations: Vec::new(),
+            desc_annotation: None,
         }
     }
     fn error(&mut self, message: impl Into<String>) -> lsp::Diagnostic {
@@ -53,50 +56,70 @@ impl<'a> Context<'a> {
     }
 }
 
-fn symbol(
-    annotations: &mut db::Annotations,
-    info: &mut db::DocumentInfo,
-    symbols: &mut HashMap<String, db::SymbolId>,
-    document: &str,
-    sym_kind: db::SymbolKind,
-    ref_kind: lsp::ReferenceKind,
-    word: Token,
-) {
-    let name = lex::escape(word.view.string(document));
-    let id = symbols.get(&name).copied().unwrap_or_else(|| {
-        let symbol = db::Symbol::new(
-            name.clone(),
-            sym_kind,
-            (ref_kind == lsp::ReferenceKind::Write)
-                .then(|| std::mem::take(annotations))
-                .unwrap_or_default(),
-        );
-        let id = info.symbols.push(symbol);
-        symbols.insert(name, id);
+fn command_symbol(ctx: &mut Context, word: Token) -> db::SymbolId {
+    let name = lex::escape(word.view.string(ctx.document));
+    ctx.commands.get(name.as_ref()).copied().unwrap_or_else(|| {
+        let name = name.into_owned();
+        let kind = db::SymbolKind::UnknownCommand;
+        let id = ctx.info.symbols.push(db::Symbol::new(name.clone(), kind));
+        ctx.commands.insert(name, id);
         id
-    });
-    let reference = lsp::Reference { range: word.range, kind: ref_kind };
-    info.references.push(db::SymbolReference { reference, id });
+    })
+}
+
+fn variable_symbol(ctx: &mut Context, word: Token) -> db::SymbolId {
+    let name = lex::escape(word.view.string(ctx.document));
+    ctx.variables.get(name.as_ref()).copied().unwrap_or_else(|| {
+        let name = name.into_owned();
+        let kind = db::SymbolKind::Variable { description: None };
+        let id = ctx.info.symbols.push(db::Symbol::new(name.clone(), kind));
+        ctx.variables.insert(name, id);
+        id
+    })
+}
+
+fn add_cmd_ref(ctx: &mut Context, word: Token) {
+    let reference = lsp::Reference::read(word.range);
+    let id = command_symbol(ctx, word);
+    ctx.info.references.push(db::SymbolReference { reference, id });
 }
 
 fn add_var_ref(ctx: &mut Context, word: Token, kind: lsp::ReferenceKind) {
-    #[rustfmt::skip] symbol(&mut ctx.annotations, &mut ctx.info, &mut ctx.variables, ctx.document, db::SymbolKind::Variable, kind, word);
+    let reference = lsp::Reference { range: word.range, kind };
+    let id = variable_symbol(ctx, word);
+    ctx.info.references.push(db::SymbolReference { reference, id });
 }
 
-fn add_cmd_ref(ctx: &mut Context, word: Token, kind: lsp::ReferenceKind) {
-    #[rustfmt::skip] symbol(&mut ctx.annotations, &mut ctx.info, &mut ctx.commands, ctx.document, db::SymbolKind::Command, kind, word);
+fn add_var_read(ctx: &mut Context, word: Token) {
+    add_var_ref(ctx, word, lsp::ReferenceKind::Read)
+}
+
+fn add_var_write(ctx: &mut Context, word: Token) {
+    add_var_ref(ctx, word, lsp::ReferenceKind::Write)
 }
 
 fn define_function(ctx: &mut Context, word: Token) {
-    let name = lex::escape(word.view.string(ctx.document));
-    let id = ctx.info.symbols.push(db::Symbol::new(
-        name.clone(),
-        db::SymbolKind::Command,
-        std::mem::take(&mut ctx.annotations),
-    ));
+    let name = lex::escape(word.view.string(ctx.document)).into_owned();
+    let id = ctx.info.symbols.push(db::Symbol::new(name.clone(), db::SymbolKind::Function {
+        description: ctx.desc_annotation.take(),
+        parameters: std::mem::take(&mut ctx.param_annotations),
+    }));
     let reference = lsp::Reference::write(word.range);
     ctx.info.references.push(db::SymbolReference { reference, id });
     ctx.commands.insert(name, id);
+}
+
+fn unset_function(ctx: &mut Context, word: Token) {
+    let name = lex::escape(word.view.string(ctx.document));
+    if let Some(&id) = ctx.commands.get(name.as_ref()) {
+        if let db::SymbolKind::Function { .. } = ctx.info.symbols[id].kind {
+            let reference = lsp::Reference::write(word.range);
+            ctx.info.references.push(db::SymbolReference { reference, id });
+            ctx.commands.remove(name.as_ref());
+            return;
+        }
+    }
+    ctx.warn(word.range, format!("'{name}' is not a function"));
 }
 
 fn protected(ctx: &mut Context, callback: impl FnOnce(&mut Context) -> ParseResult<bool>) -> bool {
@@ -132,6 +155,16 @@ fn kind_matches(kinds: &'static [TokenKind]) -> impl Copy + Fn(Token) -> bool {
     |token| kinds.contains(&token.kind)
 }
 
+fn add_description(ctx: &mut Context, annotation: util::View) {
+    if let Some(desc) = &mut ctx.desc_annotation {
+        desc.push('\n');
+        desc.push_str(annotation.string(ctx.document));
+    }
+    else {
+        ctx.desc_annotation = Some(String::from(annotation.string(ctx.document)));
+    }
+}
+
 fn handle_comment(ctx: &mut Context, token: Token) {
     if token.kind != TokenKind::Comment {
         return;
@@ -142,20 +175,12 @@ fn handle_comment(ctx: &mut Context, token: Token) {
     };
     let offset = line.find(char::is_whitespace).unwrap_or(line.len());
     let start = token.view.end - line[offset..].trim_start().len() as u32;
-    let annotation = db::Annotation::View(util::View { start, end: token.view.end });
+    let annotation = util::View { start, end: token.view.end };
     match &line[..offset] {
-        "desc" => ctx.annotations.desc = Some(annotation),
-        "exit" => ctx.annotations.exit = Some(annotation),
-        "stdin" => ctx.annotations.stdin = Some(annotation),
-        "stdout" => ctx.annotations.stdout = Some(annotation),
-        "stderr" => ctx.annotations.stderr = Some(annotation),
-        "param" => ctx.annotations.params.push(annotation),
-        "" => {
-            ctx.warn(token.range, "Missing directive");
-        }
-        directive => {
-            ctx.warn(token.range, format!("Unrecognized directive: '{directive}'"));
-        }
+        "desc" => add_description(ctx, annotation),
+        "param" => ctx.param_annotations.push(annotation),
+        "" => ctx.warn(token.range, "Missing directive"),
+        directive => ctx.warn(token.range, format!("Unrecognized directive: '{directive}'")),
     }
 }
 
@@ -237,13 +262,13 @@ fn parse_simple_value(ctx: &mut Context) -> ParseResult<bool> {
 }
 
 fn parse_value(ctx: &mut Context) -> ParseResult<bool> {
-    Ok(if parse_simple_value(ctx)? {
+    if parse_simple_value(ctx)? {
         while parse_simple_value(ctx)? {}
-        true
+        Ok(true)
     }
     else {
-        false
-    })
+        Ok(false)
+    }
 }
 
 fn skip_redirect(ctx: &mut Context) {
@@ -269,11 +294,11 @@ fn extract_arguments_until(ctx: &mut Context, end: impl Copy + Fn(Token) -> bool
 
 fn extract_potential_expansion(dollar: Token, ctx: &mut Context) -> ParseResult<()> {
     if let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
-        add_var_ref(ctx, word, lsp::ReferenceKind::Read);
+        add_var_read(ctx, word);
     }
     else if ctx.consume(TokenKind::BraceOpen) {
         let name = ctx.expect(TokenKind::Word)?;
-        add_var_ref(ctx, name, lsp::ReferenceKind::Read);
+        add_var_read(ctx, name);
         ctx.expect(TokenKind::BraceClose)?;
     }
     else if ctx.consume(TokenKind::ParenOpen) {
@@ -334,7 +359,7 @@ fn extract_loop_body(ctx: &mut Context) -> ParseResult<()> {
 
 fn extract_for_loop(ctx: &mut Context) -> ParseResult<()> {
     let variable = ctx.expect(TokenKind::Word)?;
-    add_var_ref(ctx, variable, lsp::ReferenceKind::Write);
+    add_var_write(ctx, variable);
     skip_whitespace(ctx);
     ctx.expect_word("in")?;
     skip_whitespace(ctx);
@@ -398,7 +423,7 @@ fn extract_case(ctx: &mut Context) -> ParseResult<()> {
 fn extract_builtin_variable_declaration(ctx: &mut Context) -> ParseResult<()> {
     skip_whitespace(ctx);
     while let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
-        add_var_ref(ctx, word, lsp::ReferenceKind::Write);
+        add_var_write(ctx, word);
         if ctx.consume(TokenKind::Equal) {
             parse_value(ctx)?;
         }
@@ -411,17 +436,17 @@ fn extract_builtin_unset(ctx: &mut Context) -> ParseResult<()> {
     skip_whitespace(ctx);
     let add_ref = if parse_keyword(ctx, "-f") {
         skip_whitespace(ctx);
-        add_cmd_ref
+        unset_function
     }
     else if parse_keyword(ctx, "-v") {
         skip_whitespace(ctx);
-        add_var_ref
+        add_var_write
     }
     else {
-        add_var_ref
+        add_var_write
     };
     while let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
-        add_ref(ctx, word, lsp::ReferenceKind::Write);
+        add_ref(ctx, word);
         skip_whitespace(ctx);
     }
     Ok(())
@@ -451,7 +476,7 @@ fn extract_line_command(
         parse_value(ctx)?;
         skip_whitespace(ctx);
         if ctx.lexer.peek().is_none_or(end) {
-            add_var_ref(ctx, word, lsp::ReferenceKind::Write);
+            add_var_write(ctx, word);
         }
         else {
             let word = ctx.expect(TokenKind::Word)?;
@@ -461,11 +486,11 @@ fn extract_line_command(
     }
     else {
         let command = lex::escape(word.view.string(ctx.document));
-        if let Some(&id) = ctx.commands.get(&command) {
-            if ctx.info.symbols[id].kind == db::SymbolKind::Builtin {
+        if let Some(&id) = ctx.commands.get(command.as_ref()) {
+            if matches!(ctx.info.symbols[id].kind, db::SymbolKind::Builtin) {
                 let reference = lsp::Reference::read(word.range);
                 ctx.info.references.push(db::SymbolReference { reference, id });
-                match command.as_str() {
+                match command.as_ref() {
                     "export" | "readonly" => extract_builtin_variable_declaration(ctx)?,
                     "unset" => extract_builtin_unset(ctx)?,
                     _ => extract_arguments_until(ctx, end),
@@ -473,7 +498,7 @@ fn extract_line_command(
                 return Ok(());
             }
         }
-        add_cmd_ref(ctx, word, lsp::ReferenceKind::Read);
+        add_cmd_ref(ctx, word);
         extract_arguments_until(ctx, end);
     }
     Ok(())
@@ -583,49 +608,37 @@ fn collect_references(info: &mut db::DocumentInfo) {
     }
 }
 
+// TODO: Share symbols between documents.
+fn prepare_environment(ctx: &mut Context, config: &Config) {
+    if config.complete.env_vars {
+        for variable in env::variables() {
+            ctx.variables.insert(variable.name.clone(), ctx.info.symbols.push(variable));
+        }
+    }
+    if config.complete.env_path {
+        if let Some(path) = (config.path.as_ref())
+            .map(|path| Cow::Borrowed(path.as_ref()))
+            .or_else(|| std::env::var("PATH").ok().map(Cow::Owned))
+        {
+            for executable in env::executables(&path) {
+                ctx.commands.insert(executable.name.clone(), ctx.info.symbols.push(executable));
+            }
+        }
+    }
+    for name in shell::builtins(ctx.info.shell).iter().copied().map(String::from) {
+        let symbol = ctx.info.symbols.push(db::Symbol::new(name.clone(), db::SymbolKind::Builtin));
+        ctx.commands.insert(name, symbol);
+    }
+}
+
 pub fn parse(input: &str, config: &Config) -> db::DocumentInfo {
     let mut ctx = Context::new(input, config);
     parse_shebang(&mut ctx);
-    register_builtins(&mut ctx);
+    prepare_environment(&mut ctx, config);
     skip_empty_lines(&mut ctx);
     extract_statements_until(&mut ctx, |_| false);
     collect_references(&mut ctx.info);
     ctx.info
-}
-
-fn builtin_symbol(name: String, desc: &'static str) -> db::Symbol {
-    db::Symbol {
-        name: name.clone(),
-        kind: db::SymbolKind::Builtin,
-        ref_indices: Vec::new(),
-        annotations: db::Annotations {
-            desc: Some(db::Annotation::Str(desc)),
-            ..db::Annotations::default()
-        },
-    }
-}
-
-fn register_builtins(ctx: &mut Context) {
-    for (name, desc) in [
-        (".", "Execute a script in the current environment"),
-        (":", "The null command, does nothing and always succeeds"),
-        ("break", "Break out of a loop"),
-        ("continue", "Continue from the top of the loop"),
-        ("eval", "Execute the argument as a shell command"),
-        ("exec", "Replace the current shell with the given command"),
-        ("exit", "Exit the shell"),
-        ("export", "Export variables to subsequent commands"),
-        ("readonly", "Mark variables as immutable"),
-        ("return", "Return from a function"),
-        ("set", "Set shell options"),
-        ("shift", "Shift positional parameters"),
-        ("times", "Display accumulated process times"),
-        ("trap", "Trap signals"),
-        ("unset", "Unset variables or functions"),
-    ] {
-        let name = name.to_string();
-        ctx.commands.insert(name.clone(), ctx.info.symbols.push(builtin_symbol(name, desc)));
-    }
 }
 
 #[cfg(test)]

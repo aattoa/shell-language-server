@@ -1,5 +1,6 @@
 use crate::poschars::PosChars;
 use crate::{lsp, util};
+use std::borrow::Cow;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TokenKind {
@@ -134,10 +135,10 @@ fn next_token(char: char, chars: &mut PosChars) -> TokenKind {
     }
 }
 
-fn lex(lexer: &mut Lexer) -> Option<Token> {
-    let (p1, o1) = (lexer.chars.position, lexer.chars.offset);
-    let kind = next_token(lexer.chars.next()?, &mut lexer.chars);
-    let (p2, o2) = (lexer.chars.position, lexer.chars.offset);
+fn lex(chars: &mut PosChars, next: impl FnOnce(char, &mut PosChars) -> TokenKind) -> Option<Token> {
+    let (p1, o1) = (chars.position, chars.offset);
+    let kind = next(chars.next()?, chars);
+    let (p2, o2) = (chars.position, chars.offset);
     Some(Token {
         kind,
         view: util::View { start: o1, end: o2 },
@@ -149,7 +150,7 @@ impl Iterator for Lexer<'_> {
     type Item = Token;
 
     fn next(&mut self) -> Option<Token> {
-        self.next.take().or_else(|| lex(self))
+        self.next.take().or_else(|| lex(&mut self.chars, next_token))
     }
 }
 
@@ -159,7 +160,7 @@ impl<'a> Lexer<'a> {
     }
     pub fn peek(&mut self) -> Option<Token> {
         if self.next.is_none() {
-            self.next = lex(self);
+            self.next = lex(&mut self.chars, next_token);
         }
         self.next
     }
@@ -179,13 +180,16 @@ impl<'a> Lexer<'a> {
     }
 }
 
-pub fn escape(str: &str) -> String {
+pub fn escape(str: &str) -> Cow<str> {
+    if !str.contains('\\') {
+        return Cow::Borrowed(str);
+    }
     let mut string = String::with_capacity(str.len());
     let mut chars = str.chars();
     while let Some(char) = chars.next() {
         string.push(if char != '\\' { char } else { chars.next().unwrap_or(char) });
     }
-    string
+    Cow::Owned(string)
 }
 
 pub fn is_name(str: &str) -> bool {

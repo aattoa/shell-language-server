@@ -1,10 +1,8 @@
 use crate::config::Config;
 use crate::shell::Shell;
-use crate::{db, env, external, lsp, parse, rpc};
-use serde_json::{from_value, json};
+use crate::{db, external, lsp, parse, rpc};
+use serde_json::{Value as Json, from_value, json};
 use std::process::ExitCode;
-
-type Json = serde_json::Value;
 
 #[derive(Default)]
 struct Server {
@@ -112,85 +110,71 @@ fn completion(range: lsp::Range, name: &str, kind: lsp::CompletionItemKind) -> J
     })
 }
 
-fn variable_completions(
-    db: &db::Database,
-    document: &db::Document,
-    range: lsp::Range,
-    prefix: &str,
-) -> Json {
+fn variable_completions(document: &db::Document, range: lsp::Range, prefix: &str) -> Json {
     (document.info.symbols.underlying.iter())
-        .filter(|symbol| symbol.kind == db::SymbolKind::Variable && symbol.name.starts_with(prefix))
+        .filter(|symbol| {
+            matches!(symbol.kind, db::SymbolKind::Variable { .. })
+                && symbol.name.starts_with(prefix)
+        })
         .map(|symbol| completion(range, &symbol.name, lsp::CompletionItemKind::Variable))
-        .chain(
-            (db.environment_variables.iter())
-                .filter(|name| name.starts_with(prefix))
-                .map(|name| completion(range, name, lsp::CompletionItemKind::Variable)),
-        )
         .collect()
 }
 
-fn function_completions(
-    db: &db::Database,
-    document: &db::Document,
-    range: lsp::Range,
-    prefix: &str,
-) -> Json {
+fn function_completions(document: &db::Document, range: lsp::Range, prefix: &str) -> Json {
     (document.info.symbols.underlying.iter())
-        .filter(|symbol| symbol.kind != db::SymbolKind::Variable && symbol.name.starts_with(prefix))
+        .filter(|symbol| {
+            !matches!(symbol.kind, db::SymbolKind::Variable { .. })
+                && symbol.name.starts_with(prefix)
+        })
         .map(|symbol| completion(range, &symbol.name, lsp::CompletionItemKind::Function))
-        .chain(
-            (db.path_executables.iter())
-                .filter(|name| name.starts_with(prefix))
-                .map(|name| completion(range, name, lsp::CompletionItemKind::Function)),
-        )
         .collect()
 }
 
-fn format_annotations(
-    markdown: &mut String,
+fn symbol_markup(
     document: &db::Document,
-    &db::Annotations { desc, exit, stdin, stdout, stderr, ref params }: &db::Annotations,
-) -> std::fmt::Result {
+    symbol: &db::Symbol,
+) -> Result<lsp::MarkupContent, rpc::Error> {
     use std::fmt::Write;
-    if let Some(desc) = desc {
-        write!(markdown, "\n{}", desc.string(&document.text))?;
-    }
-    if !params.is_empty() {
-        write!(markdown, "\n\n---\n\n## Parameters")?;
-        for (index, param) in params.iter().enumerate() {
-            write!(markdown, "\n- `${}`: {}", index + 1, param.string(&document.text))?;
+    match &symbol.kind {
+        db::SymbolKind::Variable { description } => {
+            let mut markdown = format!("# Variable `{}`", symbol.name);
+            if let Some(desc) = description {
+                write!(markdown, "\n{desc}")?;
+            }
+            Ok(lsp::MarkupContent::markdown(markdown))
+        }
+        db::SymbolKind::Function { description, parameters } => {
+            let mut markdown = format!("# Function `{}`", symbol.name);
+            if let Some(desc) = description {
+                write!(markdown, "\n{desc}")?;
+            }
+            if !parameters.is_empty() {
+                write!(markdown, "\n\n---\n\n## Parameters")?;
+                for (index, param) in parameters.iter().enumerate() {
+                    write!(markdown, "\n- `${}`: {}", index + 1, param.string(&document.text))?;
+                }
+            }
+            Ok(lsp::MarkupContent::markdown(markdown))
+        }
+        db::SymbolKind::KnownCommand { path } => Ok(lsp::MarkupContent::markdown(format!(
+            "# Command `{}`\n\n---\n\nPath: `{}`",
+            symbol.name,
+            path.display()
+        ))),
+        db::SymbolKind::UnknownCommand => {
+            Ok(lsp::MarkupContent::markdown(format!("# Command `{}`", symbol.name)))
+        }
+        db::SymbolKind::Builtin => {
+            Ok(lsp::MarkupContent::markdown(format!("# Shell builtin `{}`", symbol.name)))
         }
     }
-    let mut section = |view: Option<db::Annotation>, name: &str| {
-        if let Some(view) = view {
-            write!(markdown, "\n\n---\n\n## {}\n{}", name, view.string(&document.text))?
-        };
-        Ok(())
-    };
-    section(stdout, "Standard output")?;
-    section(stderr, "Standard error")?;
-    section(stdin, "Standard input")?;
-    section(exit, "Exit status")?;
-    Ok(())
 }
 
-fn symbol_hover(document: &db::Document, symbol: db::SymbolReference) -> Json {
-    let description = match document.info.symbols[symbol.id].kind {
-        db::SymbolKind::Variable => "Variable",
-        db::SymbolKind::Command => "Command",
-        db::SymbolKind::Builtin => "Shell builtin",
-    };
-    let mut value = format!("# {} `{}`", description, document.info.symbols[symbol.id].name);
-    match format_annotations(&mut value, document, &document.info.symbols[symbol.id].annotations) {
-        Ok(()) => json!({
-            "contents": lsp::MarkupContent { kind: lsp::MarkupKind::Markdown, value },
-            "range": symbol.reference.range,
-        }),
-        Err(error) => {
-            eprintln!("[debug] Could not format symbol annotations: {error}");
-            Json::Null
-        }
-    }
+fn symbol_hover(document: &db::Document, symbol: db::SymbolReference) -> Result<Json, rpc::Error> {
+    Ok(json!({
+        "contents": symbol_markup(document, &document.info.symbols[symbol.id])?,
+        "range": symbol.reference.range,
+    }))
 }
 
 fn analyze(document: &mut db::Document, config: &Config) {
@@ -205,7 +189,7 @@ fn analyze(document: &mut db::Document, config: &Config) {
                 document.info.diagnostics.extend(diagnostics);
                 document.info.actions.extend(actions);
             }
-            Err(error) => eprintln!("[debug] Failed to run shellcheck: {error}"),
+            Err(error) => eprintln!("[debug] Shellcheck failed: {error}"),
         }
     }
 }
@@ -217,20 +201,13 @@ fn format(
     document_text: &str,
 ) -> Result<String, rpc::Error> {
     external::shfmt::format(shell, options, shfmt_path, document_text)
-        .map_err(|error| rpc::Error::internal_error(error.to_string()))
+        .map_err(|error| rpc::Error::request_failed(error.to_string()))
 }
 
 fn initialize(server: &mut Server) {
     if std::mem::replace(&mut server.initialized, true) {
         eprintln!("[debug] Received initialize request when initialized");
         return;
-    }
-    if server.config.complete.env_path {
-        server.db.path_executables = (server.config.path.as_deref())
-            .map_or_else(env::collect_path_executables, env::collect_executables);
-    }
-    if server.config.complete.env_vars {
-        server.db.environment_variables = env::collect_variables();
     }
     if server.config.integration.shellcheck {
         let path: &str = &server.config.executables.shellcheck;
@@ -246,7 +223,7 @@ fn initialize(server: &mut Server) {
             server.config.integration.shfmt = false;
         }
     }
-    // todo: deduplicate
+    // TODO: deduplicate
 }
 
 fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Json, rpc::Error> {
@@ -267,8 +244,8 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
         "textDocument/hover" => {
             let params: lsp::PositionParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
-            let hover = |symbol| symbol_hover(document, symbol);
-            Ok(find_symbol(&document.info, params.position).map_or(Json::Null, hover))
+            find_symbol(&document.info, params.position)
+                .map_or(Ok(Json::Null), |symbol| symbol_hover(document, symbol))
         }
         "textDocument/definition" => {
             let params: lsp::PositionParams = from_value(params)?;
@@ -317,10 +294,10 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
 
             match kind {
                 lsp::CompletionItemKind::Variable => {
-                    Ok(variable_completions(&server.db, document, range, prefix))
+                    Ok(variable_completions(document, range, prefix))
                 }
                 lsp::CompletionItemKind::Function => {
-                    Ok(function_completions(&server.db, document, range, prefix))
+                    Ok(function_completions(document, range, prefix))
                 }
                 _ => Err(rpc::Error::internal_error("completion failure")),
             }
@@ -351,7 +328,8 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
             let params: lsp::CodeActionParams = from_value(params)?;
             Ok((get_document(&server.db, &params.document)?.info.actions.iter())
                 .filter(|action| {
-                    action.range.start <= params.range.start && params.range.end <= action.range.end
+                    action.range.contained_by(params.range)
+                        || params.range.contained_by(action.range)
                 })
                 .map(|action| {
                     json!({

@@ -1,41 +1,48 @@
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct JsonRpc;
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct Request {
     #[serde(default)]
     pub params: serde_json::Value,
     pub method: String,
-    pub jsonrpc: JsonRpc,
     pub id: Option<u32>,
+    #[allow(dead_code)]
+    pub jsonrpc: JsonRpc,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResponseKind {
+    Result(serde_json::Value),
+    Error(Error),
+}
+
+#[derive(Serialize)]
 pub struct Response {
     pub id: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<Error>,
+    #[serde(flatten)]
+    pub kind: ResponseKind,
     pub jsonrpc: JsonRpc,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct Error {
     pub code: ErrorCode,
     pub message: String,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub enum ErrorCode {
     ParseError = -32700,
     InvalidRequest = -32600,
     MethodNotFound = -32601,
     InvalidParams = -32602,
     InternalError = -32603,
+    RequestFailed = -32803,
 }
 
 impl Serialize for ErrorCode {
@@ -50,7 +57,7 @@ impl JsonRpc {
 
 struct JsonRpcVisitor;
 
-impl<'de> serde::de::Visitor<'de> for JsonRpcVisitor {
+impl serde::de::Visitor<'_> for JsonRpcVisitor {
     type Value = JsonRpc;
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         formatter.write_str(JsonRpc::VERSION)
@@ -110,20 +117,20 @@ pub fn read_message(input: &mut impl Read) -> io::Result<String> {
         return error("Missing content separator.");
     }
 
-    let mut content = Vec::with_capacity(length);
-    let read = input.take(length as u64).read_to_end(&mut content)?;
-
-    if length == read {
-        Ok(String::from_utf8_lossy(&content).into_owned())
-    }
-    else {
-        error("Premature end of input.")
-    }
+    let mut content = vec![0u8; length];
+    input.read_exact(&mut content)?;
+    Ok(String::from_utf8_lossy(&content).into_owned())
 }
 
 impl From<serde_json::Error> for Error {
     fn from(error: serde_json::Error) -> Error {
         Error::invalid_params(error.to_string())
+    }
+}
+
+impl From<std::fmt::Error> for Error {
+    fn from(error: std::fmt::Error) -> Self {
+        Self::request_failed(format!("Formatting failed: {error}"))
     }
 }
 
@@ -137,6 +144,9 @@ impl Error {
     pub fn internal_error(message: impl Into<String>) -> Error {
         Error::new(ErrorCode::InternalError, message)
     }
+    pub fn request_failed(message: impl Into<String>) -> Error {
+        Error::new(ErrorCode::RequestFailed, message)
+    }
     pub fn method_not_found(method: &str) -> Error {
         Error::new(ErrorCode::MethodNotFound, format!("Unhandled method: {method}"))
     }
@@ -144,10 +154,10 @@ impl Error {
 
 impl Response {
     pub fn success(id: Option<u32>, result: serde_json::Value) -> Response {
-        Response { id, result: Some(result), error: None, jsonrpc: JsonRpc }
+        Response { id, kind: ResponseKind::Result(result), jsonrpc: JsonRpc }
     }
     pub fn error(id: Option<u32>, error: Error) -> Response {
-        Response { id, result: None, error: Some(error), jsonrpc: JsonRpc }
+        Response { id, kind: ResponseKind::Error(error), jsonrpc: JsonRpc }
     }
 }
 

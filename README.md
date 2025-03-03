@@ -55,15 +55,12 @@ Function annotations apply to the first function defined after the annotation.
 
 - `desc`: General description
 - `param`: Describe function parameters
-- `stdout`, `stderr`, `stdin`: Specify how standard input streams are used
-- `exit`: Specify the exit status
 
 Example use case:
 
 ```sh
-##@ desc Get the number of entries in the given directory
+##@ desc Write the number of entries in the given directory to stdout
 ##@ param Directory path
-##@ stdout Number of directory entries
 example () {
     ls -a "$1" | wc -l
 }
@@ -73,15 +70,17 @@ example () {
 
 The server can be configured with the following command line arguments:
 
-- `--no-env-path`: Do not complete commands available through `$PATH`.
-- `--no-env-vars`: Do not complete environment variable names.
-- `--no-env`: Equivalent to `--no-env-path --no-env-vars`.
-- `--path=ARG`: Use the given argument instead of `$PATH`.
-- `--default-shell=SH`: Default to the given shell when a script has no shebang.
-- `--exe=NAME:PATH`: Specify the path to an executable. Can be specified multiple times.
-- `--shellcheck=BOOL`: Enable or disable shellcheck integration. Defaults to true.
-- `--shfmt=BOOL`: Enable or disable shfmt integration. Defaults to false.
-- `--debug`: Log every LSP request and response to `stderr`.
+| Flag | Description |
+| --- | --- |
+| `--no-env-path` | Do not complete commands available through `$PATH` |
+| `--no-env-vars` | Do not complete environment variable names |
+| `--no-env` | Equivalent to `--no-env-path --no-env-vars` |
+| `--path=ARG` | Use the given argument instead of `$PATH` |
+| `--default-shell=SH` | Default to the given shell when a script has no shebang |
+| `--exe=NAME:PATH` | Specify the path to an executable. Can be specified multiple times |
+| `--shellcheck=BOOL` | Enable or disable shellcheck integration. Defaults to true |
+| `--shfmt=BOOL` | Enable or disable shfmt integration. Defaults to false |
+| `--debug` | Log every LSP request and response to `stderr` |
 
 Consult the man page for examples and more information.
 

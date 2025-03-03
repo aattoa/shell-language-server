@@ -216,14 +216,14 @@ impl Range {
         start: Position { line: 0, character: 0 },
         end: Position { line: u32::MAX, character: u32::MAX },
     };
-    pub fn new(start: Position, end: Position) -> Self {
-        Self { start, end }
-    }
     pub fn for_position(start: Position) -> Self {
         Self { start, end: Position { line: start.line, character: start.character + 1 } }
     }
     pub fn contains(self, position: Position) -> bool {
         self.start <= position && position < self.end // End is exclusive
+    }
+    pub fn contained_by(self, other: Self) -> bool {
+        other.start <= self.start && self.end <= other.end
     }
 }
 
@@ -255,6 +255,15 @@ impl Diagnostic {
     }
     pub fn info(range: Range, message: impl Into<String>) -> Self {
         Self::new(range, Severity::Information, message.into())
+    }
+}
+
+impl MarkupContent {
+    pub fn markdown(value: String) -> Self {
+        Self { kind: MarkupKind::Markdown, value }
+    }
+    pub fn plaintext(value: String) -> Self {
+        Self { kind: MarkupKind::Plaintext, value }
     }
 }
 
