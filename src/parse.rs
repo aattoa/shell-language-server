@@ -56,6 +56,13 @@ impl<'a> Context<'a> {
     }
 }
 
+fn location(first: Token, last: Token) -> db::Location {
+    db::Location {
+        range: lsp::Range { start: first.range.start, end: last.range.end },
+        view: util::View { start: first.view.start, end: last.view.end },
+    }
+}
+
 fn command_symbol(ctx: &mut Context, word: Token) -> db::SymbolId {
     let name = lex::escape(word.view.string(ctx.document));
     ctx.commands.get(name.as_ref()).copied().unwrap_or_else(|| {
@@ -71,7 +78,7 @@ fn variable_symbol(ctx: &mut Context, word: Token) -> db::SymbolId {
     let name = lex::escape(word.view.string(ctx.document));
     ctx.variables.get(name.as_ref()).copied().unwrap_or_else(|| {
         let name = name.into_owned();
-        let kind = db::SymbolKind::Variable { description: None };
+        let kind = db::SymbolKind::Variable { description: None, first_assign_line: None };
         let id = ctx.info.symbols.push(db::Symbol::new(name.clone(), kind));
         ctx.variables.insert(name, id);
         id
@@ -84,29 +91,32 @@ fn add_cmd_ref(ctx: &mut Context, word: Token) {
     ctx.info.references.push(db::SymbolReference { reference, id });
 }
 
-fn add_var_ref(ctx: &mut Context, word: Token, kind: lsp::ReferenceKind) {
+fn add_var_ref(ctx: &mut Context, word: Token, kind: lsp::ReferenceKind) -> db::SymbolId {
     let reference = lsp::Reference { range: word.range, kind };
     let id = variable_symbol(ctx, word);
     ctx.info.references.push(db::SymbolReference { reference, id });
+    id
 }
 
-fn add_var_read(ctx: &mut Context, word: Token) {
+fn add_var_read(ctx: &mut Context, word: Token) -> db::SymbolId {
     add_var_ref(ctx, word, lsp::ReferenceKind::Read)
 }
 
-fn add_var_write(ctx: &mut Context, word: Token) {
+fn add_var_write(ctx: &mut Context, word: Token) -> db::SymbolId {
     add_var_ref(ctx, word, lsp::ReferenceKind::Write)
 }
 
-fn define_function(ctx: &mut Context, word: Token) {
+fn define_function(ctx: &mut Context, word: Token) -> db::SymbolId {
     let name = lex::escape(word.view.string(ctx.document)).into_owned();
     let id = ctx.info.symbols.push(db::Symbol::new(name.clone(), db::SymbolKind::Function {
         description: ctx.desc_annotation.take(),
+        definition: None,
         parameters: std::mem::take(&mut ctx.param_annotations),
     }));
     let reference = lsp::Reference::write(word.range);
     ctx.info.references.push(db::SymbolReference { reference, id });
     ctx.commands.insert(name, id);
+    id
 }
 
 fn unset_function(ctx: &mut Context, word: Token) {
@@ -359,7 +369,7 @@ fn extract_loop_body(ctx: &mut Context) -> ParseResult<()> {
 
 fn extract_for_loop(ctx: &mut Context) -> ParseResult<()> {
     let variable = ctx.expect(TokenKind::Word)?;
-    add_var_write(ctx, variable);
+    add_var_assign(ctx, variable);
     skip_whitespace(ctx);
     ctx.expect_word("in")?;
     skip_whitespace(ctx);
@@ -423,7 +433,7 @@ fn extract_case(ctx: &mut Context) -> ParseResult<()> {
 fn extract_builtin_variable_declaration(ctx: &mut Context) -> ParseResult<()> {
     skip_whitespace(ctx);
     while let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
-        add_var_write(ctx, word);
+        add_var_assign(ctx, word);
         if ctx.consume(TokenKind::Equal) {
             parse_value(ctx)?;
         }
@@ -434,36 +444,51 @@ fn extract_builtin_variable_declaration(ctx: &mut Context) -> ParseResult<()> {
 
 fn extract_builtin_unset(ctx: &mut Context) -> ParseResult<()> {
     skip_whitespace(ctx);
-    let add_ref = if parse_keyword(ctx, "-f") {
+    let is_function = if parse_keyword(ctx, "-f") {
         skip_whitespace(ctx);
-        unset_function
+        true
     }
     else if parse_keyword(ctx, "-v") {
         skip_whitespace(ctx);
-        add_var_write
+        false
     }
     else {
-        add_var_write
+        false
     };
     while let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
-        add_ref(ctx, word);
+        if is_function {
+            unset_function(ctx, word);
+        }
+        else {
+            add_var_write(ctx, word);
+        }
         skip_whitespace(ctx);
     }
     Ok(())
+}
+
+fn set_function_location(ctx: &mut Context, id: db::SymbolId, location: db::Location) {
+    match &mut ctx.info.symbols[id].kind {
+        db::SymbolKind::Function { definition, .. } => {
+            *definition = Some(location);
+        }
+        _ => unreachable!(),
+    }
 }
 
 fn extract_function(ctx: &mut Context, word: Token) -> ParseResult<()> {
     if !is_identifier(word.view.string(ctx.document), ctx.info.shell) {
         ctx.warn(word.range, "Invalid function name");
     }
-    define_function(ctx, word);
+    let id = define_function(ctx, word);
     skip_whitespace(ctx);
     ctx.expect(TokenKind::ParenClose)?;
     skip_empty_lines(ctx);
     ctx.expect(TokenKind::BraceOpen)?;
     skip_empty_lines(ctx);
     extract_statements_until(ctx, kind_matches(&[TokenKind::BraceClose]));
-    ctx.expect(TokenKind::BraceClose)?;
+    let last = ctx.expect(TokenKind::BraceClose)?;
+    set_function_location(ctx, id, location(word, last));
     Ok(())
 }
 
@@ -476,7 +501,7 @@ fn extract_line_command(
         parse_value(ctx)?;
         skip_whitespace(ctx);
         if ctx.lexer.peek().is_none_or(end) {
-            add_var_write(ctx, word);
+            add_var_assign(ctx, word);
         }
         else {
             let word = ctx.expect(TokenKind::Word)?;
@@ -639,6 +664,19 @@ pub fn parse(input: &str, config: &Config) -> db::DocumentInfo {
     extract_statements_until(&mut ctx, |_| false);
     collect_references(&mut ctx.info);
     ctx.info
+}
+
+fn add_var_assign(ctx: &mut Context, word: Token) {
+    let id = add_var_write(ctx, word);
+    match &mut ctx.info.symbols[id].kind {
+        db::SymbolKind::Variable { first_assign_line, description } => {
+            if first_assign_line.is_none() {
+                *first_assign_line = Some(word.range.start.line);
+                *description = ctx.desc_annotation.take();
+            }
+        }
+        _ => unreachable!(),
+    }
 }
 
 #[cfg(test)]

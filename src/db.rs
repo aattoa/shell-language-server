@@ -7,6 +7,11 @@ use std::path::{Path, PathBuf};
 define_index!(pub SymbolId as u32);
 define_index!(pub DocumentId as u32);
 
+pub struct Location {
+    pub range: lsp::Range,
+    pub view: util::View,
+}
+
 pub enum SymbolKind {
     Builtin,
     UnknownCommand,
@@ -15,9 +20,11 @@ pub enum SymbolKind {
     },
     Variable {
         description: Option<String>,
+        first_assign_line: Option<u32>,
     },
     Function {
         description: Option<String>,
+        definition: Option<Location>,
         parameters: Vec<util::View>,
     },
 }

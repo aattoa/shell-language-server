@@ -33,7 +33,7 @@ pub fn executables(path: &str) -> impl Iterator<Item = Symbol> {
 }
 
 pub fn variables() -> impl Iterator<Item = Symbol> {
-    std::env::vars_os()
-        .filter_map(|var| var.0.into_string().ok())
-        .map(|name| Symbol::new(name, SymbolKind::Variable { description: None }))
+    std::env::vars_os().filter_map(|var| var.0.into_string().ok()).map(|name| {
+        Symbol::new(name, SymbolKind::Variable { description: None, first_assign_line: None })
+    })
 }

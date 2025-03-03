@@ -136,31 +136,46 @@ fn symbol_markup(
 ) -> Result<lsp::MarkupContent, rpc::Error> {
     use std::fmt::Write;
     match &symbol.kind {
-        db::SymbolKind::Variable { description } => {
+        db::SymbolKind::Variable { description, first_assign_line } => {
             let mut markdown = format!("# Variable `{}`", symbol.name);
             if let Some(desc) = description {
                 write!(markdown, "\n{desc}")?;
             }
+            if let &Some(line) = first_assign_line {
+                write!(
+                    markdown,
+                    "\n---\nFirst assignment on line {}:\n```sh\n{}\n```",
+                    line + 1,
+                    get_line(document, line)?
+                )?;
+            }
             Ok(lsp::MarkupContent::markdown(markdown))
         }
-        db::SymbolKind::Function { description, parameters } => {
+        db::SymbolKind::Function { description, definition, parameters } => {
             let mut markdown = format!("# Function `{}`", symbol.name);
             if let Some(desc) = description {
                 write!(markdown, "\n{desc}")?;
             }
             if !parameters.is_empty() {
-                write!(markdown, "\n\n---\n\n## Parameters")?;
+                write!(markdown, "\n---\n## Parameters")?;
                 for (index, param) in parameters.iter().enumerate() {
                     write!(markdown, "\n- `${}`: {}", index + 1, param.string(&document.text))?;
                 }
             }
+            if let Some(db::Location { range, view }) = definition {
+                write!(
+                    markdown,
+                    "\n\n---\n\nDefined on line {}:\n```sh\n{}\n```",
+                    range.start.line + 1,
+                    view.string(&document.text)
+                )?;
+            }
             Ok(lsp::MarkupContent::markdown(markdown))
         }
-        db::SymbolKind::KnownCommand { path } => Ok(lsp::MarkupContent::markdown(format!(
-            "# Command `{}`\n\n---\n\nPath: `{}`",
-            symbol.name,
-            path.display()
-        ))),
+        db::SymbolKind::KnownCommand { path } => {
+            let markdown = format!("# Command `{}`\n---\nPath: `{}`", symbol.name, path.display());
+            Ok(lsp::MarkupContent::markdown(markdown))
+        }
         db::SymbolKind::UnknownCommand => {
             Ok(lsp::MarkupContent::markdown(format!("# Command `{}`", symbol.name)))
         }
