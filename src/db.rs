@@ -13,11 +13,6 @@ pub struct Location {
 }
 
 pub enum SymbolKind {
-    Builtin,
-    UnknownCommand,
-    KnownCommand {
-        path: PathBuf,
-    },
     Variable {
         description: Option<String>,
         first_assign_line: Option<u32>,
@@ -27,6 +22,10 @@ pub enum SymbolKind {
         definition: Option<Location>,
         parameters: Vec<util::View>,
     },
+    Command {
+        path: Option<PathBuf>,
+    },
+    Builtin,
 }
 
 pub struct Symbol {

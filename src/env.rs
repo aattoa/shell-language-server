@@ -17,7 +17,7 @@ fn is_executable(data: std::fs::Metadata) -> bool {
 fn path_symbol(path: PathBuf) -> Option<Symbol> {
     path.file_name()
         .and_then(|name| name.to_str().map(String::from))
-        .map(|name| Symbol::new(name, SymbolKind::KnownCommand { path }))
+        .map(|name| Symbol::new(name, SymbolKind::Command { path: Some(path) }))
 }
 
 pub fn executables(path: &str) -> impl Iterator<Item = Symbol> {

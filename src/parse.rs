@@ -67,7 +67,7 @@ fn command_symbol(ctx: &mut Context, word: Token) -> db::SymbolId {
     let name = lex::escape(word.view.string(ctx.document));
     ctx.commands.get(name.as_ref()).copied().unwrap_or_else(|| {
         let name = name.into_owned();
-        let kind = db::SymbolKind::UnknownCommand;
+        let kind = db::SymbolKind::Command { path: None };
         let id = ctx.info.symbols.push(db::Symbol::new(name.clone(), kind));
         ctx.commands.insert(name, id);
         id

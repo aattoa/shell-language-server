@@ -43,7 +43,7 @@ Default to the given shell when a script has no shebang.
 .B --exe=\fINAME\fB:\fIPATH\fP
 Specify the path to an executable. Can be specified multiple times.
 
-Valid values for \fINAME\fP are \fBshellcheck\fP, \fBshfmt\fP.
+Valid values for \fINAME\fP are \fBsh\fP, \fBzsh\fP, \fBbash\fP, \fBshellcheck\fP, \fBshfmt\fP, \fBman\fP.
 
 .TP
 .B --shellcheck=\fIBOOL\fP
@@ -86,10 +86,6 @@ If you have installed shellcheck to a non-default location:
 
 $
 .B shell-language-server --exe=shellcheck:/path/to/executable
-
-.SH BUGS
-
-The parser is far from perfect, and various errors are to be expected.
 
 .SH AUTHOR
 Written by aattoa <aattoa@proton.me>

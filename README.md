@@ -23,7 +23,7 @@ useful.
 6. **[Build](#build)**
 7. **[Setup](#setup)**
 
-## Supported features
+## Features
 
 - Go to definition
 - Hover documentation
@@ -36,13 +36,14 @@ useful.
 - Diagnostics reporting
 - Additional diagnostics through [shellcheck](https://www.shellcheck.net) integration
 - Document and range formatting through [shfmt](https://github.com/mvdan/sh) integration
+- Intelligent `man` and `help` integration based on the active shell
 
 ## Planned features
 
 - Document symbols
 - Signature help
 - Command argument completion
-- Imports and exports
+- Module directives
 - Syntax highlighting
 
 ## Annotations

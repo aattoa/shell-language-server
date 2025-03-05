@@ -92,11 +92,15 @@ fn parse_command_line() -> Result<config::Config, ExitCode> {
                         return Err(cli_error("Invalid argument for '--exe', expected NAME:PATH"));
                     };
                     let exe = match name {
+                        "sh" => &mut config.executables.sh,
+                        "zsh" => &mut config.executables.zsh,
+                        "bash" => &mut config.executables.bash,
                         "shellcheck" => &mut config.executables.shellcheck,
                         "shfmt" => &mut config.executables.shfmt,
+                        "man" => &mut config.executables.man,
                         _ => {
                             return Err(cli_error(format!(
-                                "Unrecognized name: '{name}'. Recognized names are shellcheck, shfmt."
+                                "Unrecognized name: '{name}'. Recognized names are sh, zsh, bash, shellcheck, shfmt, man."
                             )));
                         }
                     };

@@ -130,9 +130,28 @@ fn function_completions(document: &db::Document, range: lsp::Range, prefix: &str
         .collect()
 }
 
+fn manual(shell: Shell, name: &str, config: &Config) -> Option<String> {
+    if config.integration.man && !name.contains('/') {
+        external::man::documentation(shell, name, &config.executables.man)
+    }
+    else {
+        None
+    }
+}
+
+fn help(shell: Shell, name: &str, config: &Config) -> Option<String> {
+    if config.integration.help {
+        external::help::documentation(shell, name, &config.executables)
+    }
+    else {
+        None
+    }
+}
+
 fn symbol_markup(
     document: &db::Document,
     symbol: &db::Symbol,
+    config: &Config,
 ) -> Result<lsp::MarkupContent, rpc::Error> {
     use std::fmt::Write;
     match &symbol.kind {
@@ -165,29 +184,40 @@ fn symbol_markup(
             if let Some(db::Location { range, view }) = definition {
                 write!(
                     markdown,
-                    "\n\n---\n\nDefined on line {}:\n```sh\n{}\n```",
+                    "\n---\nDefined on line {}:\n```sh\n{}\n```",
                     range.start.line + 1,
                     view.string(&document.text)
                 )?;
             }
             Ok(lsp::MarkupContent::markdown(markdown))
         }
-        db::SymbolKind::KnownCommand { path } => {
-            let markdown = format!("# Command `{}`\n---\nPath: `{}`", symbol.name, path.display());
+        db::SymbolKind::Command { path } => {
+            let mut markdown = format!("# Command `{}`", symbol.name);
+            if let Some(path) = path {
+                write!(markdown, "\n---\nPath: `{}`", path.display())?;
+            }
+            if let Some(manual) = manual(document.info.shell, &symbol.name, config) {
+                write!(markdown, "\n---\n```man\n{manual}\n```")?;
+            }
             Ok(lsp::MarkupContent::markdown(markdown))
         }
-        db::SymbolKind::UnknownCommand => {
-            Ok(lsp::MarkupContent::markdown(format!("# Command `{}`", symbol.name)))
-        }
         db::SymbolKind::Builtin => {
-            Ok(lsp::MarkupContent::markdown(format!("# Shell builtin `{}`", symbol.name)))
+            let mut markdown = format!("# Shell builtin `{}`", symbol.name);
+            if let Some(help) = help(document.info.shell, &symbol.name, config) {
+                write!(markdown, "\n---\n```\n{help}\n```")?;
+            }
+            Ok(lsp::MarkupContent::markdown(markdown))
         }
     }
 }
 
-fn symbol_hover(document: &db::Document, symbol: db::SymbolReference) -> Result<Json, rpc::Error> {
+fn symbol_hover(
+    document: &db::Document,
+    symbol: db::SymbolReference,
+    config: &Config,
+) -> Result<Json, rpc::Error> {
     Ok(json!({
-        "contents": symbol_markup(document, &document.info.symbols[symbol.id])?,
+        "contents": symbol_markup(document, &document.info.symbols[symbol.id], config)?,
         "range": symbol.reference.range,
     }))
 }
@@ -260,7 +290,7 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
             let params: lsp::PositionParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
             find_symbol(&document.info, params.position)
-                .map_or(Ok(Json::Null), |symbol| symbol_hover(document, symbol))
+                .map_or(Ok(Json::Null), |symbol| symbol_hover(document, symbol, &server.config))
         }
         "textDocument/definition" => {
             let params: lsp::PositionParams = from_value(params)?;
