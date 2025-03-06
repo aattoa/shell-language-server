@@ -166,45 +166,66 @@ fn kind_matches(kinds: &'static [TokenKind]) -> impl Copy + Fn(Token) -> bool {
 }
 
 fn add_description(ctx: &mut Context, annotation: util::View) {
+    let string = annotation.string(ctx.document).trim_end();
     if let Some(desc) = &mut ctx.desc_annotation {
         desc.push('\n');
-        desc.push_str(annotation.string(ctx.document));
+        desc.push_str(string);
     }
     else {
-        ctx.desc_annotation = Some(String::from(annotation.string(ctx.document)));
+        ctx.desc_annotation = Some(String::from(string));
     }
 }
 
-fn handle_comment(ctx: &mut Context, token: Token) {
+fn parse_comment(ctx: &mut Context, token: Token) {
     if token.kind != TokenKind::Comment {
         return;
     }
-    let Some(line) = token.view.string(ctx.document).strip_prefix("##@").map(str::trim_start)
-    else {
-        return;
-    };
-    let offset = line.find(char::is_whitespace).unwrap_or(line.len());
-    let start = token.view.end - line[offset..].trim_start().len() as u32;
-    let annotation = util::View { start, end: token.view.end };
-    match &line[..offset] {
-        "desc" => add_description(ctx, annotation),
-        "param" => ctx.param_annotations.push(annotation),
-        "" => ctx.warn(token.range, "Missing directive"),
-        directive => ctx.warn(token.range, format!("Unrecognized directive: '{directive}'")),
+    if let Some(line) = token.view.string(ctx.document).strip_prefix("##@").map(str::trim_start) {
+        let offset = line.find(char::is_whitespace).unwrap_or(line.len());
+        let arg_width = line[offset..].trim_start().len() as u32;
+        let annotation = util::View { start: token.view.end - arg_width, end: token.view.end };
+
+        ctx.info.tokens.data.push(lsp::SemanticToken {
+            position: token.range.start,
+            width: token.range.end.character - token.range.start.character - arg_width,
+            kind: lsp::SemanticTokenKind::Keyword,
+        });
+
+        let remaining = |kind| lsp::SemanticToken {
+            position: lsp::Position {
+                character: token.range.end.character - arg_width,
+                ..token.range.end
+            },
+            width: arg_width,
+            kind,
+        };
+
+        match &line[..offset] {
+            "desc" => {
+                ctx.info.tokens.data.push(remaining(lsp::SemanticTokenKind::String));
+                add_description(ctx, annotation);
+            }
+            "param" => {
+                ctx.info.tokens.data.push(remaining(lsp::SemanticTokenKind::Parameter));
+                ctx.param_annotations.push(annotation);
+            }
+            "" => ctx.warn(token.range, "Missing directive"),
+            directive => ctx.warn(token.range, format!("Unrecognized directive: '{directive}'")),
+        }
     }
 }
 
 fn skip_whitespace(ctx: &mut Context) {
     const KINDS: &[TokenKind] = &[TokenKind::Space, TokenKind::Comment];
     while let Some(token) = ctx.lexer.next_if(kind_matches(KINDS)) {
-        handle_comment(ctx, token);
+        parse_comment(ctx, token);
     }
 }
 
 fn skip_empty_lines(ctx: &mut Context) {
     const KINDS: &[TokenKind] = &[TokenKind::Space, TokenKind::Comment, TokenKind::NewLine];
     while let Some(token) = ctx.lexer.next_if(kind_matches(KINDS)) {
-        handle_comment(ctx, token);
+        parse_comment(ctx, token);
     }
 }
 
@@ -621,7 +642,7 @@ fn parse_shebang(ctx: &mut Context) {
             }
         }
         else {
-            handle_comment(ctx, comment);
+            parse_comment(ctx, comment);
         }
     }
 }

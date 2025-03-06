@@ -96,12 +96,6 @@ pub struct DidOpenDocumentParams {
 }
 
 #[derive(Deserialize)]
-pub struct DidCloseDocumentParams {
-    #[serde(rename = "textDocument")]
-    pub document: DocumentIdentifier,
-}
-
-#[derive(Deserialize)]
 pub struct DidChangeDocumentParams {
     #[serde(rename = "textDocument")]
     pub document: VersionedDocumentIdentifier,
@@ -110,7 +104,7 @@ pub struct DidChangeDocumentParams {
 }
 
 #[derive(Deserialize)]
-pub struct PullDiagnosticParams {
+pub struct DocumentIdentifierParams {
     #[serde(rename = "textDocument")]
     pub document: DocumentIdentifier,
 }
@@ -130,6 +124,8 @@ pub struct RenameParams {
     pub new_name: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum MarkupKind {
     Plaintext,
     Markdown,
@@ -197,6 +193,24 @@ pub struct CodeActionParams {
     #[serde(rename = "textDocument")]
     pub document: DocumentIdentifier,
     pub range: Range,
+}
+
+#[derive(Clone, Copy)]
+pub enum SemanticTokenKind {
+    Keyword = 0,
+    Parameter = 1,
+    String = 2,
+}
+
+pub struct SemanticToken {
+    pub position: Position,
+    pub width: u32,
+    pub kind: SemanticTokenKind,
+}
+
+#[derive(Default)]
+pub struct SemanticTokensData {
+    pub data: Vec<SemanticToken>,
 }
 
 impl Position {
@@ -285,15 +299,6 @@ impl Serialize for ReferenceKind {
     }
 }
 
-impl Serialize for MarkupKind {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(match self {
-            MarkupKind::Plaintext => "plaintext",
-            MarkupKind::Markdown => "markdown",
-        })
-    }
-}
-
 impl Display for DocumentURI {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "file://{}", self.path.display())
@@ -303,6 +308,24 @@ impl Display for DocumentURI {
 impl Serialize for DocumentURI {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&self.to_string())
+    }
+}
+
+impl Serialize for SemanticTokensData {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut seq = s.serialize_seq(Some(self.data.len() * 5))?;
+        let mut prev = Position::default();
+        for &SemanticToken { position: Position { line, character }, width, kind } in &self.data {
+            if line != prev.line {
+                prev.character = 0;
+            }
+            for integer in [line - prev.line, character - prev.character, width, kind as u32, 0] {
+                seq.serialize_element(&integer)?;
+            }
+            prev = Position { line, character };
+        }
+        seq.end()
     }
 }
 

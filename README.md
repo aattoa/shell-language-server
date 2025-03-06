@@ -31,6 +31,7 @@ useful.
 - Highlight references
 - Rename variables and functions
 - Complete variable, function, and command names
+- Enhanced syntax highlighting with semantic tokens
 - Code actions
 - Annotations
 - Diagnostics reporting
@@ -44,7 +45,6 @@ useful.
 - Signature help
 - Command argument completion
 - Module directives
-- Syntax highlighting
 
 ## Annotations
 

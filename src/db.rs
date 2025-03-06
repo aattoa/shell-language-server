@@ -52,6 +52,7 @@ pub struct DocumentInfo {
     pub references: Vec<SymbolReference>,
     pub symbols: IndexVec<Symbol, SymbolId>,
     pub actions: Vec<Action>,
+    pub tokens: lsp::SemanticTokensData,
     pub shell: Shell,
 }
 

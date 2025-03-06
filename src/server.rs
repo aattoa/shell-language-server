@@ -22,6 +22,13 @@ fn server_capabilities(config: &Config) -> Json {
             "interFileDependencies": false,
             "workspaceDiagnostics": false,
         },
+        "semanticTokensProvider": {
+            "legend": {
+                "tokenTypes": ["keyword", "parameter", "string"],
+                "tokenModifiers": [],
+            },
+            "full": true,
+        },
         "hoverProvider": true,
         "definitionProvider": true,
         "referencesProvider": true,
@@ -165,7 +172,7 @@ fn symbol_markup(
                     markdown,
                     "\n---\nFirst assignment on line {}:\n```sh\n{}\n```",
                     line + 1,
-                    get_line(document, line)?
+                    get_line(document, line)?.trim()
                 )?;
             }
             Ok(lsp::MarkupContent::markdown(markdown))
@@ -178,7 +185,12 @@ fn symbol_markup(
             if !parameters.is_empty() {
                 write!(markdown, "\n---\n## Parameters")?;
                 for (index, param) in parameters.iter().enumerate() {
-                    write!(markdown, "\n- `${}`: {}", index + 1, param.string(&document.text))?;
+                    write!(
+                        markdown,
+                        "\n- `${}`: {}",
+                        index + 1,
+                        param.string(&document.text).trim()
+                    )?;
                 }
             }
             if let Some(db::Location { range, view }) = definition {
@@ -323,7 +335,7 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
             Ok(json!({ "changes": { params.position_params.document.uri.to_string(): edits } }))
         }
         "textDocument/diagnostic" => {
-            let params: lsp::PullDiagnosticParams = from_value(params)?;
+            let params: lsp::DocumentIdentifierParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
             Ok(json!({ "kind": "full", "items": document.info.diagnostics }))
         }
@@ -384,6 +396,11 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
                 })
                 .collect())
         }
+        "textDocument/semanticTokens/full" => {
+            let params: lsp::DocumentIdentifierParams = from_value(params)?;
+            let document = get_document(&server.db, &params.document)?;
+            Ok(json!({ "data": document.info.tokens }))
+        }
         _ => Err(rpc::Error::method_not_found(method)),
     }
 }
@@ -403,7 +420,7 @@ fn handle_notification(server: &mut Server, method: &str, params: Json) -> Resul
             Ok(())
         }
         "textDocument/didClose" => {
-            let params: lsp::DidCloseDocumentParams = from_value(params)?;
+            let params: lsp::DocumentIdentifierParams = from_value(params)?;
             server.db.close(&params.document.uri.path);
             Ok(())
         }
