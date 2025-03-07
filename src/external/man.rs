@@ -1,10 +1,10 @@
 use crate::shell::Shell;
 use std::process::{Command, Stdio};
 
-pub fn documentation(shell: Shell, name: &str, man_path: &str) -> Option<String> {
+pub fn documentation(shell: Shell, name: &str) -> Option<String> {
     let sections = if shell == Shell::Posix { "1p,1" } else { "1,1p" };
 
-    let mut child = Command::new(man_path)
+    let mut child = Command::new("man")
         .args(["-s", sections, "--", name])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

@@ -25,7 +25,6 @@ fn remove_trailing_newline(mut string: String) -> String {
 pub fn format(
     shell: Shell,
     options: lsp::FormattingOptions,
-    shfmt_path: &str,
     document_text: &str,
 ) -> std::io::Result<String> {
     use std::process::{Command, Stdio};
@@ -33,7 +32,7 @@ pub fn format(
     // shfmt uses tabs if 0 is given as the indent width.
     let indent = if options.use_spaces { options.tab_size } else { 0 };
 
-    let mut child = Command::new(shfmt_path)
+    let mut child = Command::new("shfmt")
         .arg(format!("--indent={indent}"))
         .arg(dialect_flag(shell))
         .stdin(Stdio::piped())

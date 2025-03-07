@@ -22,9 +22,7 @@ pub enum SymbolKind {
         definition: Option<Location>,
         parameters: Vec<util::View>,
     },
-    Command {
-        path: Option<PathBuf>,
-    },
+    Command,
     Builtin,
 }
 

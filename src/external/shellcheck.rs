@@ -29,12 +29,11 @@ fn deserialize_level<'de, D: serde::Deserializer<'de>>(d: D) -> Result<lsp::Seve
 }
 
 #[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Range {
     line: u32,
     column: u32,
-    #[serde(rename = "endLine")]
     end_line: u32,
-    #[serde(rename = "endColumn")]
     end_column: u32,
 }
 
@@ -60,7 +59,6 @@ struct Comment {
     level: lsp::Severity,
     code: i32,
     message: String,
-    fix: Option<Fix>,
 }
 
 #[derive(serde::Deserialize)]
@@ -121,10 +119,10 @@ fn shell_flag(shell: Shell) -> &'static str {
     }
 }
 
-pub fn analyze(shell: Shell, shellcheck_path: &str, document_text: &str) -> std::io::Result<Info> {
+pub fn analyze(shell: Shell, document_text: &str) -> std::io::Result<Info> {
     use std::process::{Command, Stdio};
 
-    let mut child = Command::new(shellcheck_path)
+    let mut child = Command::new("shellcheck")
         .args([shell_flag(shell), "--format=json", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

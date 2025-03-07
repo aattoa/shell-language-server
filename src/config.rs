@@ -1,61 +1,61 @@
-use crate::shell::Shell;
-use std::borrow::Cow;
+use crate::shell::{Shell, parse_shell_name};
 
-#[derive(Clone, Copy)]
-pub struct Complete {
-    pub env_path: bool,
-    pub env_vars: bool,
-}
-
-impl Default for Complete {
-    fn default() -> Self {
-        Self { env_path: true, env_vars: true }
-    }
-}
-
-#[derive(Clone)]
-pub struct Executables {
-    pub sh: Cow<'static, str>,
-    pub zsh: Cow<'static, str>,
-    pub bash: Cow<'static, str>,
-    pub shellcheck: Cow<'static, str>,
-    pub shfmt: Cow<'static, str>,
-    pub man: Cow<'static, str>,
-}
-
-impl Default for Executables {
-    fn default() -> Self {
-        Self {
-            sh: Cow::Borrowed("/bin/sh"),
-            zsh: Cow::Borrowed("/bin/zsh"),
-            bash: Cow::Borrowed("/bin/bash"),
-            shellcheck: Cow::Borrowed("/usr/bin/shellcheck"),
-            shfmt: Cow::Borrowed("/usr/bin/shfmt"),
-            man: Cow::Borrowed("/usr/bin/man"),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct Integration {
-    pub shellcheck: bool,
-    pub shfmt: bool,
+#[derive(serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Integrate {
     pub man: bool,
     pub help: bool,
+    pub shfmt: bool,
+    pub shellcheck: bool,
 }
 
-impl Default for Integration {
+#[derive(serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Environment {
+    pub path: Option<Box<str>>,
+    pub variables: bool,
+    pub executables: bool,
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct Settings {
+    pub integrate: Integrate,
+    pub environment: Environment,
+    #[serde(deserialize_with = "deserialize_shell")]
+    pub default_shell: Shell,
+}
+
+#[derive(Default)]
+pub struct Cmdline {
+    pub debug: bool,
+    pub settings: Settings,
+}
+
+impl Default for Integrate {
     fn default() -> Self {
-        Self { shellcheck: true, shfmt: false, man: true, help: true }
+        Self { man: true, help: true, shfmt: true, shellcheck: true }
     }
 }
 
-#[derive(Clone, Default)]
-pub struct Config {
-    pub debug: bool,
-    pub complete: Complete,
-    pub path: Option<Box<str>>,
-    pub executables: Executables,
-    pub integration: Integration,
-    pub default_shell: Shell,
+impl Default for Environment {
+    fn default() -> Self {
+        Self { path: None, variables: true, executables: true }
+    }
+}
+
+struct ShellVisitor;
+
+impl serde::de::Visitor<'_> for ShellVisitor {
+    type Value = Shell;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a shell name")
+    }
+    fn visit_str<E: serde::de::Error>(self, shell: &str) -> Result<Shell, E> {
+        parse_shell_name(shell).ok().ok_or_else(|| E::custom("unrecognized shell"))
+    }
+}
+
+fn deserialize_shell<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Shell, D::Error> {
+    d.deserialize_str(ShellVisitor)
 }

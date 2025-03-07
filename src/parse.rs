@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::Settings;
 use crate::lex::{self, Lexer, Token, TokenKind};
 use crate::shell::{self, Shell};
 use crate::{db, env, lsp, util};
@@ -18,9 +18,9 @@ struct Context<'a> {
 }
 
 impl<'a> Context<'a> {
-    fn new(document: &'a str, config: &Config) -> Self {
+    fn new(document: &'a str, shell: Shell) -> Self {
         Self {
-            info: db::DocumentInfo { shell: config.default_shell, ..db::DocumentInfo::default() },
+            info: db::DocumentInfo { shell, ..db::DocumentInfo::default() },
             lexer: Lexer::new(document),
             document,
             commands: HashMap::new(),
@@ -67,7 +67,7 @@ fn command_symbol(ctx: &mut Context, word: Token) -> db::SymbolId {
     let name = lex::escape(word.view.string(ctx.document));
     ctx.commands.get(name.as_ref()).copied().unwrap_or_else(|| {
         let name = name.into_owned();
-        let kind = db::SymbolKind::Command { path: None };
+        let kind = db::SymbolKind::Command;
         let id = ctx.info.symbols.push(db::Symbol::new(name.clone(), kind));
         ctx.commands.insert(name, id);
         id
@@ -655,20 +655,18 @@ fn collect_references(info: &mut db::DocumentInfo) {
 }
 
 // TODO: Share symbols between documents.
-fn prepare_environment(ctx: &mut Context, config: &Config) {
-    if config.complete.env_vars {
+fn prepare_environment(ctx: &mut Context, settings: &Settings) {
+    if settings.environment.variables {
         for variable in env::variables() {
             ctx.variables.insert(variable.name.clone(), ctx.info.symbols.push(variable));
         }
     }
-    if config.complete.env_path {
-        if let Some(path) = (config.path.as_ref())
-            .map(|path| Cow::Borrowed(path.as_ref()))
-            .or_else(|| std::env::var("PATH").ok().map(Cow::Owned))
-        {
-            for executable in env::executables(&path) {
-                ctx.commands.insert(executable.name.clone(), ctx.info.symbols.push(executable));
-            }
+    if settings.environment.executables {
+        let path = (settings.environment.path.as_deref().map(Cow::Borrowed))
+            .or_else(|| env::path_variable().map(Cow::Owned));
+
+        for executable in path.iter().flat_map(|path| env::executables(path)) {
+            ctx.commands.insert(executable.name.clone(), ctx.info.symbols.push(executable));
         }
     }
     for name in shell::builtins(ctx.info.shell).iter().copied().map(String::from) {
@@ -677,10 +675,10 @@ fn prepare_environment(ctx: &mut Context, config: &Config) {
     }
 }
 
-pub fn parse(input: &str, config: &Config) -> db::DocumentInfo {
-    let mut ctx = Context::new(input, config);
+pub fn parse(input: &str, settings: &Settings) -> db::DocumentInfo {
+    let mut ctx = Context::new(input, settings.default_shell);
     parse_shebang(&mut ctx);
-    prepare_environment(&mut ctx, config);
+    prepare_environment(&mut ctx, settings);
     skip_empty_lines(&mut ctx);
     extract_statements_until(&mut ctx, |_| false);
     collect_references(&mut ctx.info);
@@ -703,10 +701,10 @@ fn add_var_assign(ctx: &mut Context, word: Token) {
 #[cfg(test)]
 mod tests {
     use crate::assert_let;
-    use crate::config::Config;
+    use crate::config::Settings;
 
     fn diagnostics(input: &str) -> Vec<super::lsp::Diagnostic> {
-        super::parse(input, &Config::default()).diagnostics
+        super::parse(input, &Settings::default()).diagnostics
     }
 
     #[test]

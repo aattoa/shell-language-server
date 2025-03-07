@@ -9,13 +9,9 @@ It communicates with clients over `stdin`/`stdout` using the [Language Server
 Protocol](https://en.wikipedia.org/wiki/Language_Server_Protocol), which is
 based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
 
-Note that the project is far from done, and in many cases will not work
-perfectly. Despite some limitations, the language server is already
-useful.
-
 ## Table of contents
 
-1. **[Supported features](#supported-features)**
+1. **[Features](#features)**
 2. **[Planned features](#planned-features)**
 3. **[Annotations](#annotations)**
 4. **[Configuration](#configuration)**
@@ -27,15 +23,14 @@ useful.
 
 - Go to definition
 - Hover documentation
-- Find references
-- Highlight references
+- Find and highlight references
 - Rename variables and functions
 - Complete variable, function, and command names
 - Enhanced syntax highlighting with semantic tokens
 - Code actions
 - Annotations
-- Diagnostics reporting
-- Additional diagnostics through [shellcheck](https://www.shellcheck.net) integration
+- Diagnostics (warnings, errors, hints)
+- Additional diagnostics and code actions through [shellcheck](https://www.shellcheck.net) integration
 - Document and range formatting through [shfmt](https://github.com/mvdan/sh) integration
 - Intelligent `man` and `help` integration based on the active shell
 
@@ -43,8 +38,18 @@ useful.
 
 - Document symbols
 - Signature help
-- Command argument completion
 - Module directives
+- Scoped locals and parameters
+- Highlight Shellcheck directives
+- Dynamically register capabilities on configuration change
+- Completion:
+    - Paths
+    - Command arguments
+    - Comment directives
+- Code actions:
+    - Replace command name with path
+    - Insert Shellcheck directives
+    - Change shebang based on usage
 
 ## Annotations
 
@@ -69,21 +74,32 @@ example () {
 
 ## Configuration
 
-The server can be configured with the following command line arguments:
+The server can be configured with the `workspace/didChangeConfiguration`
+notification or the `initialize` request with the `initializationOptions`
+field. The settings must conform to the following JSON structure, where every
+field is optional:
 
-| Flag | Description |
-| --- | --- |
-| `--no-env-path` | Do not complete commands available through `$PATH` |
-| `--no-env-vars` | Do not complete environment variable names |
-| `--no-env` | Equivalent to `--no-env-path --no-env-vars` |
-| `--path=ARG` | Use the given argument instead of `$PATH` |
-| `--default-shell=SH` | Default to the given shell when a script has no shebang |
-| `--exe=NAME:PATH` | Specify the path to an executable. Can be specified multiple times |
-| `--shellcheck=BOOL` | Enable or disable shellcheck integration. Defaults to true |
-| `--shfmt=BOOL` | Enable or disable shfmt integration. Defaults to false |
-| `--debug` | Log every LSP request and response to `stderr` |
+```
+{
+    "shell": {
+        "integrate": {
+            "man": boolean,
+            "help": boolean,
+            "shfmt": boolean,
+            "shellcheck": boolean
+        },
+        "environment": {
+            "path": string,
+            "variables": boolean,
+            "executables": boolean
+        },
+        "default_shell": string
+    }
+}
+```
 
-Consult the man page for examples and more information.
+A fallback command line flag `--settings-json=ARG` is also provided. For
+example: `--settings-json={"shell":{"integrate":{"shfmt":false}}}`
 
 ## Dependencies
 

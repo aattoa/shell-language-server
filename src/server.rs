@@ -1,18 +1,19 @@
-use crate::config::Config;
+use crate::config::{Cmdline, Settings};
 use crate::shell::Shell;
-use crate::{db, external, lsp, parse, rpc};
+use crate::{db, env, external, lsp, parse, rpc};
 use serde_json::{Value as Json, from_value, json};
+use std::borrow::Cow;
 use std::process::ExitCode;
 
 #[derive(Default)]
 struct Server {
     db: db::Database,
-    config: Config,
+    settings: Settings,
     initialized: bool,
     exit_code: Option<ExitCode>,
 }
 
-fn server_capabilities(config: &Config) -> Json {
+fn server_capabilities(settings: &Settings) -> Json {
     json!({
         "textDocumentSync": {
             "openClose": true,
@@ -33,22 +34,29 @@ fn server_capabilities(config: &Config) -> Json {
         "definitionProvider": true,
         "referencesProvider": true,
         "documentHighlightProvider": true,
-        "documentFormattingProvider": config.integration.shfmt,
-        "documentRangeFormattingProvider": config.integration.shfmt,
-        "codeActionProvider": config.integration.shellcheck,
+        "documentFormattingProvider": settings.integrate.shfmt,
+        "documentRangeFormattingProvider": settings.integrate.shfmt,
+        "codeActionProvider": settings.integrate.shellcheck,
         "renameProvider": { "prepareProvider": true },
         "completionProvider": {},
     })
 }
 
-fn get_document<'db>(
-    db: &'db db::Database,
+fn document_id(
+    db: &db::Database,
     identifier: &lsp::DocumentIdentifier,
-) -> Result<&'db db::Document, rpc::Error> {
-    db.document_paths.get(&identifier.uri.path).map(|&id| &db.documents[id]).ok_or_else(|| {
+) -> Result<db::DocumentId, rpc::Error> {
+    db.document_paths.get(&identifier.uri.path).copied().ok_or_else(|| {
         let path = identifier.uri.path.display();
         rpc::Error::invalid_params(format!("Unopened document referenced: '{path}'",))
     })
+}
+
+fn get_document<'a>(
+    db: &'a db::Database,
+    id: &lsp::DocumentIdentifier,
+) -> Result<&'a db::Document, rpc::Error> {
+    document_id(db, id).map(|id| &db.documents[id])
 }
 
 fn compare_position(position: lsp::Position, range: lsp::Range) -> std::cmp::Ordering {
@@ -137,28 +145,23 @@ fn function_completions(document: &db::Document, range: lsp::Range, prefix: &str
         .collect()
 }
 
-fn manual(shell: Shell, name: &str, config: &Config) -> Option<String> {
-    if config.integration.man && !name.contains('/') {
-        external::man::documentation(shell, name, &config.executables.man)
+fn manual(shell: Shell, name: &str, settings: &Settings) -> Option<String> {
+    if settings.integrate.man && !name.contains('/') && !name.contains('\\') {
+        external::man::documentation(shell, name)
     }
     else {
         None
     }
 }
 
-fn help(shell: Shell, name: &str, config: &Config) -> Option<String> {
-    if config.integration.help {
-        external::help::documentation(shell, name, &config.executables)
-    }
-    else {
-        None
-    }
+fn help(shell: Shell, name: &str, settings: &Settings) -> Option<String> {
+    if settings.integrate.help { external::help::documentation(shell, name) } else { None }
 }
 
 fn symbol_markup(
     document: &db::Document,
     symbol: &db::Symbol,
-    config: &Config,
+    settings: &Settings,
 ) -> Result<lsp::MarkupContent, rpc::Error> {
     use std::fmt::Write;
     match &symbol.kind {
@@ -203,19 +206,22 @@ fn symbol_markup(
             }
             Ok(lsp::MarkupContent::markdown(markdown))
         }
-        db::SymbolKind::Command { path } => {
+        db::SymbolKind::Command => {
             let mut markdown = format!("# Command `{}`", symbol.name);
-            if let Some(path) = path {
+            if let Some(path) = (settings.environment.path.as_deref().map(Cow::Borrowed))
+                .or_else(|| env::path_variable().map(Cow::Owned))
+                .and_then(|path| env::find_executable(&symbol.name, &path))
+            {
                 write!(markdown, "\n---\nPath: `{}`", path.display())?;
             }
-            if let Some(manual) = manual(document.info.shell, &symbol.name, config) {
+            if let Some(manual) = manual(document.info.shell, &symbol.name, settings) {
                 write!(markdown, "\n---\n```man\n{manual}\n```")?;
             }
             Ok(lsp::MarkupContent::markdown(markdown))
         }
         db::SymbolKind::Builtin => {
             let mut markdown = format!("# Shell builtin `{}`", symbol.name);
-            if let Some(help) = help(document.info.shell, &symbol.name, config) {
+            if let Some(help) = help(document.info.shell, &symbol.name, settings) {
                 write!(markdown, "\n---\n```\n{help}\n```")?;
             }
             Ok(lsp::MarkupContent::markdown(markdown))
@@ -226,22 +232,18 @@ fn symbol_markup(
 fn symbol_hover(
     document: &db::Document,
     symbol: db::SymbolReference,
-    config: &Config,
+    settings: &Settings,
 ) -> Result<Json, rpc::Error> {
     Ok(json!({
-        "contents": symbol_markup(document, &document.info.symbols[symbol.id], config)?,
+        "contents": symbol_markup(document, &document.info.symbols[symbol.id], settings)?,
         "range": symbol.reference.range,
     }))
 }
 
-fn analyze(document: &mut db::Document, config: &Config) {
-    document.info = parse::parse(&document.text, config);
-    if config.integration.shellcheck {
-        match external::shellcheck::analyze(
-            document.info.shell,
-            &config.executables.shellcheck,
-            &document.text,
-        ) {
+fn analyze(document: &mut db::Document, settings: &Settings) {
+    document.info = parse::parse(&document.text, settings);
+    if settings.integrate.shellcheck {
+        match external::shellcheck::analyze(document.info.shell, &document.text) {
             Ok(external::shellcheck::Info { diagnostics, actions }) => {
                 document.info.diagnostics.extend(diagnostics);
                 document.info.actions.extend(actions);
@@ -254,41 +256,23 @@ fn analyze(document: &mut db::Document, config: &Config) {
 fn format(
     shell: Shell,
     options: lsp::FormattingOptions,
-    shfmt_path: &str,
     document_text: &str,
 ) -> Result<String, rpc::Error> {
-    external::shfmt::format(shell, options, shfmt_path, document_text)
+    external::shfmt::format(shell, options, document_text)
         .map_err(|error| rpc::Error::request_failed(error.to_string()))
-}
-
-fn initialize(server: &mut Server) {
-    if std::mem::replace(&mut server.initialized, true) {
-        eprintln!("[debug] Received initialize request when initialized");
-        return;
-    }
-    if server.config.integration.shellcheck {
-        let path: &str = &server.config.executables.shellcheck;
-        if !std::path::Path::new(path).exists() {
-            eprintln!("[debug] Invalid shellcheck path: {path}");
-            server.config.integration.shellcheck = false;
-        }
-    }
-    if server.config.integration.shfmt {
-        let path: &str = &server.config.executables.shfmt;
-        if !std::path::Path::new(path).exists() {
-            eprintln!("[debug] Invalid shfmt path: {path}");
-            server.config.integration.shfmt = false;
-        }
-    }
-    // TODO: deduplicate
 }
 
 fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Json, rpc::Error> {
     match method {
         "initialize" => {
-            initialize(server);
+            if std::mem::replace(&mut server.initialized, true) {
+                eprintln!("[debug] Received initialize request when initialized");
+            }
+            if let lsp::InitializeParams { settings: Some(settings) } = from_value(params)? {
+                server.settings = settings;
+            }
             Ok(json!({
-                "capabilities": server_capabilities(&server.config),
+                "capabilities": server_capabilities(&server.settings),
                 "serverInfo": { "name": "shell-language-server" },
             }))
         }
@@ -300,9 +284,9 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
         }
         "textDocument/hover" => {
             let params: lsp::PositionParams = from_value(params)?;
-            let document = get_document(&server.db, &params.document)?;
+            let document = &server.db.documents[document_id(&server.db, &params.document)?];
             find_symbol(&document.info, params.position)
-                .map_or(Ok(Json::Null), |symbol| symbol_hover(document, symbol, &server.config))
+                .map_or(Ok(Json::Null), |symbol| symbol_hover(document, symbol, &server.settings))
         }
         "textDocument/definition" => {
             let params: lsp::PositionParams = from_value(params)?;
@@ -362,23 +346,14 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
         "textDocument/formatting" => {
             let params: lsp::FormattingParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
-            let new_text = format(
-                document.info.shell,
-                params.options,
-                &server.config.executables.shfmt,
-                &document.text,
-            )?;
+            let new_text = format(document.info.shell, params.options, &document.text)?;
             Ok(json!([lsp::TextEdit { range: lsp::Range::MAX, new_text }]))
         }
         "textDocument/rangeFormatting" => {
             let params: lsp::RangeFormattingParams = from_value(params)?;
             let document = get_document(&server.db, &params.format.document)?;
-            let new_text = format(
-                document.info.shell,
-                params.format.options,
-                &server.config.executables.shfmt,
-                &document.text[db::text_range(&document.text, params.range)],
-            )?;
+            let text = &document.text[db::text_range(&document.text, params.range)];
+            let new_text = format(document.info.shell, params.format.options, text)?;
             Ok(json!([lsp::TextEdit { range: params.range, new_text }]))
         }
         "textDocument/codeAction" => {
@@ -415,7 +390,7 @@ fn handle_notification(server: &mut Server, method: &str, params: Json) -> Resul
         "textDocument/didOpen" => {
             let params: lsp::DidOpenDocumentParams = from_value(params)?;
             let mut document = db::Document::new(params.document.text);
-            analyze(&mut document, &server.config);
+            analyze(&mut document, &server.settings);
             server.db.open(params.document.uri.path, document);
             Ok(())
         }
@@ -426,13 +401,17 @@ fn handle_notification(server: &mut Server, method: &str, params: Json) -> Resul
         }
         "textDocument/didChange" => {
             let params: lsp::DidChangeDocumentParams = from_value(params)?;
-            let document_id = server.db.document_paths[&params.document.identifier.uri.path];
-            let document = (server.db.documents.get_mut(document_id))
-                .ok_or_else(|| rpc::Error::invalid_params("Can not edit unopened document"))?;
+            let id = document_id(&server.db, &params.document.identifier)?;
+            let document = &mut server.db.documents[id];
             for change in params.changes {
                 document.edit(change.range, &change.text);
             }
-            analyze(document, &server.config);
+            analyze(document, &server.settings);
+            Ok(())
+        }
+        "workspace/didChangeConfiguration" => {
+            let params: lsp::DidChangeConfigurationParams = from_value(params)?;
+            server.settings = params.settings.shell;
             Ok(())
         }
         _ => {
@@ -474,8 +453,8 @@ fn handle_message(server: &mut Server, message: &str) -> Option<String> {
     reply.map(|reply| serde_json::to_string(&reply).expect("Reply serialization failed"))
 }
 
-pub fn run(config: Config) -> ExitCode {
-    let mut server = Server { config, ..Server::default() };
+pub fn run(cmdline: Cmdline) -> ExitCode {
+    let mut server = Server { settings: cmdline.settings, ..Server::default() };
     let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
 
@@ -485,11 +464,11 @@ pub fn run(config: Config) -> ExitCode {
         }
         match rpc::read_message(&mut stdin) {
             Ok(message) => {
-                if server.config.debug {
+                if cmdline.debug {
                     eprintln!("[debug] --> {}", message);
                 }
                 if let Some(reply) = handle_message(&mut server, &message) {
-                    if server.config.debug {
+                    if cmdline.debug {
                         eprintln!("[debug] <-- {}", reply);
                     }
                     if let Err(error) = rpc::write_message(&mut stdout, &reply) {

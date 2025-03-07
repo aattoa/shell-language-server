@@ -20,38 +20,8 @@ Display help information.
 Display version information.
 
 .TP
-.B --no-env-path
-Do not complete commands available through \fB$PATH\fP.
-
-.TP
-.B --no-env-vars
-Do not complete environment variable names.
-
-.TP
-.B --no-env
-Equivalent to \fB--no-env-path --no-env-vars\fP.
-
-.TP
-.B --path=\fIARG\fP
-Use the given argument instead of \fB$PATH\fP.
-
-.TP
-.B --default-shell=\fISH\fP
-Default to the given shell when a script has no shebang.
-
-.TP
-.B --exe=\fINAME\fB:\fIPATH\fP
-Specify the path to an executable. Can be specified multiple times.
-
-Valid values for \fINAME\fP are \fBsh\fP, \fBzsh\fP, \fBbash\fP, \fBshellcheck\fP, \fBshfmt\fP, \fBman\fP.
-
-.TP
-.B --shellcheck=\fIBOOL\fP
-Enable or disable shellcheck integration. Defaults to true.
-
-.TP
-.B --shfmt=\fIBOOL\fP
-Enable or disable shfmt integration. Defaults to false.
+.B --settings-json=\fIARG\fP
+Provide server initialization settings.
 
 .TP
 .B --debug
@@ -74,18 +44,6 @@ Transport error: failed to read or write LSP message.
 .TP
 3
 Invalid command line: could not parse one or more arguments.
-
-.SH EXAMPLES
-
-If you want the server to only be aware of executables located in \fB$HOME/scripts\fP and \fB/usr/bin\fP:
-
-$
-.B shell-language-server --path="$HOME/scripts":/usr/bin
-
-If you have installed shellcheck to a non-default location:
-
-$
-.B shell-language-server --exe=shellcheck:/path/to/executable
 
 .SH AUTHOR
 Written by aattoa <aattoa@proton.me>

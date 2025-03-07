@@ -1,3 +1,4 @@
+use crate::config;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::path::PathBuf;
@@ -87,6 +88,12 @@ pub struct DocumentItem {
 pub struct ContentChange {
     pub range: Range,
     pub text: String,
+}
+
+#[derive(Deserialize)]
+pub struct InitializeParams {
+    #[serde(rename = "initializationOptions")]
+    pub settings: Option<config::Settings>,
 }
 
 #[derive(Deserialize)]
@@ -193,6 +200,16 @@ pub struct CodeActionParams {
     #[serde(rename = "textDocument")]
     pub document: DocumentIdentifier,
     pub range: Range,
+}
+
+#[derive(Deserialize)]
+pub struct SettingsContainer {
+    pub shell: config::Settings,
+}
+
+#[derive(Deserialize)]
+pub struct DidChangeConfigurationParams {
+    pub settings: SettingsContainer,
 }
 
 #[derive(Clone, Copy)]
