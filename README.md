@@ -28,6 +28,8 @@ based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
 - Complete variable, function, and command names
 - Enhanced syntax highlighting with semantic tokens
 - Code actions
+    - Insert full command path
+    - Apply Shellcheck fixes
 - Annotations
 - Diagnostics (warnings, errors, hints)
 - Additional diagnostics and code actions through [shellcheck](https://www.shellcheck.net) integration
@@ -47,7 +49,6 @@ based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
     - Command arguments
     - Comment directives
 - Code actions:
-    - Replace command name with path
     - Insert Shellcheck directives
     - Change shebang based on usage
 

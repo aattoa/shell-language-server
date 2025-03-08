@@ -36,7 +36,7 @@ fn server_capabilities(settings: &Settings) -> Json {
         "documentHighlightProvider": true,
         "documentFormattingProvider": settings.integrate.shfmt,
         "documentRangeFormattingProvider": settings.integrate.shfmt,
-        "codeActionProvider": settings.integrate.shellcheck,
+        "codeActionProvider": true,
         "renameProvider": { "prepareProvider": true },
         "completionProvider": {},
     })
@@ -145,6 +145,12 @@ fn function_completions(document: &db::Document, range: lsp::Range, prefix: &str
         .collect()
 }
 
+fn find_executable(name: &str, settings: &Settings) -> Option<std::path::PathBuf> {
+    (settings.environment.path.as_deref().map(Cow::Borrowed))
+        .or_else(|| env::path_variable().map(Cow::Owned))
+        .and_then(|path| env::find_executable(name, &path))
+}
+
 fn manual(shell: Shell, name: &str, settings: &Settings) -> Option<String> {
     if settings.integrate.man && !name.contains('/') && !name.contains('\\') {
         external::man::documentation(shell, name)
@@ -208,10 +214,7 @@ fn symbol_markup(
         }
         db::SymbolKind::Command => {
             let mut markdown = format!("# Command `{}`", symbol.name);
-            if let Some(path) = (settings.environment.path.as_deref().map(Cow::Borrowed))
-                .or_else(|| env::path_variable().map(Cow::Owned))
-                .and_then(|path| env::find_executable(&symbol.name, &path))
-            {
+            if let Some(path) = find_executable(&symbol.name, settings) {
                 write!(markdown, "\n---\nPath: `{}`", path.display())?;
             }
             if let Some(manual) = manual(document.info.shell, &symbol.name, settings) {
@@ -260,6 +263,26 @@ fn format(
 ) -> Result<String, rpc::Error> {
     external::shfmt::format(shell, options, document_text)
         .map_err(|error| rpc::Error::request_failed(error.to_string()))
+}
+
+fn action_insert_path(
+    params: &lsp::CodeActionParams,
+    document: &db::Document,
+    settings: &Settings,
+) -> Option<Json> {
+    let db::SymbolReference { reference, id } = find_symbol(&document.info, params.range.start)?;
+    let symbol = &document.info.symbols[id];
+    if reference.kind == lsp::ReferenceKind::Write
+        || matches!(symbol.kind, db::SymbolKind::Variable { .. })
+    {
+        return None;
+    }
+    let path = find_executable(&symbol.name, settings)?;
+    let edit = lsp::TextEdit { range: reference.range, new_text: String::from(path.to_str()?) };
+    Some(json!({
+        "title": "Insert full command path",
+        "edit": { "changes": { params.document.uri.to_string(): [edit] } }
+    }))
 }
 
 fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Json, rpc::Error> {
@@ -358,7 +381,8 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
         }
         "textDocument/codeAction" => {
             let params: lsp::CodeActionParams = from_value(params)?;
-            Ok((get_document(&server.db, &params.document)?.info.actions.iter())
+            let document = get_document(&server.db, &params.document)?;
+            Ok((document.info.actions.iter())
                 .filter(|action| {
                     action.range.contained_by(params.range)
                         || params.range.contained_by(action.range)
@@ -369,6 +393,7 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
                         "edit": { "changes": { params.document.uri.to_string(): action.edits } }
                     })
                 })
+                .chain(action_insert_path(&params, document, &server.settings))
                 .collect())
         }
         "textDocument/semanticTokens/full" => {
