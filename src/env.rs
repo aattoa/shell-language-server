@@ -1,6 +1,3 @@
-use crate::db::{Symbol, SymbolKind};
-use std::path::PathBuf;
-
 #[cfg(unix)]
 fn is_executable(data: std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -25,20 +22,18 @@ pub fn path_variable() -> Option<String> {
     std::env::var("PATH").inspect_err(|error| eprintln!("Could not read $PATH: {error}")).ok()
 }
 
-pub fn find_executable(name: &str, path: &str) -> Option<PathBuf> {
+pub fn find_executable(name: &str, path: &str) -> Option<std::path::PathBuf> {
     executable_entries(path).find(|entry| entry.file_name() == name).map(|entry| entry.path())
 }
 
-pub fn executables(path: &str) -> impl Iterator<Item = Symbol> {
+pub fn executables(path: &str) -> impl Iterator<Item = String> {
     let mut names: Vec<String> =
         executable_entries(path).filter_map(|entry| entry.file_name().into_string().ok()).collect();
     names.sort_unstable();
     names.dedup();
-    names.into_iter().map(|name| Symbol::new(name, SymbolKind::Command))
+    names.into_iter()
 }
 
-pub fn variables() -> impl Iterator<Item = Symbol> {
-    std::env::vars_os().filter_map(|var| var.0.into_string().ok()).map(|name| {
-        Symbol::new(name, SymbolKind::Variable { description: None, first_assign_line: None })
-    })
+pub fn variables() -> impl Iterator<Item = String> {
+    std::env::vars_os().filter_map(|var| var.0.into_string().ok())
 }

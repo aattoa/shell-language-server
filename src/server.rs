@@ -128,8 +128,7 @@ fn completion(range: lsp::Range, name: &str, kind: lsp::CompletionItemKind) -> J
 fn variable_completions(document: &db::Document, range: lsp::Range, prefix: &str) -> Json {
     (document.info.symbols.underlying.iter())
         .filter(|symbol| {
-            matches!(symbol.kind, db::SymbolKind::Variable { .. })
-                && symbol.name.starts_with(prefix)
+            matches!(symbol.kind, db::SymbolKind::Variable(_)) && symbol.name.starts_with(prefix)
         })
         .map(|symbol| completion(range, &symbol.name, lsp::CompletionItemKind::Variable))
         .collect()
@@ -138,8 +137,7 @@ fn variable_completions(document: &db::Document, range: lsp::Range, prefix: &str
 fn function_completions(document: &db::Document, range: lsp::Range, prefix: &str) -> Json {
     (document.info.symbols.underlying.iter())
         .filter(|symbol| {
-            !matches!(symbol.kind, db::SymbolKind::Variable { .. })
-                && symbol.name.starts_with(prefix)
+            !matches!(symbol.kind, db::SymbolKind::Variable(_)) && symbol.name.starts_with(prefix)
         })
         .map(|symbol| completion(range, &symbol.name, lsp::CompletionItemKind::Function))
         .collect()
@@ -171,7 +169,8 @@ fn symbol_markup(
 ) -> Result<lsp::MarkupContent, rpc::Error> {
     use std::fmt::Write;
     match &symbol.kind {
-        db::SymbolKind::Variable { description, first_assign_line } => {
+        &db::SymbolKind::Variable(id) => {
+            let db::Variable { description, first_assign_line } = &document.info.variables[id];
             let mut markdown = format!("# Variable `{}`", symbol.name);
             if let Some(desc) = description {
                 write!(markdown, "\n{desc}")?;
@@ -186,7 +185,8 @@ fn symbol_markup(
             }
             Ok(lsp::MarkupContent::markdown(markdown))
         }
-        db::SymbolKind::Function { description, definition, parameters } => {
+        &db::SymbolKind::Function(id) => {
+            let db::Function { description, definition, parameters } = &document.info.functions[id];
             let mut markdown = format!("# Function `{}`", symbol.name);
             if let Some(desc) = description {
                 write!(markdown, "\n{desc}")?;
@@ -273,7 +273,7 @@ fn action_insert_path(
     let db::SymbolReference { reference, id } = find_symbol(&document.info, params.range.start)?;
     let symbol = &document.info.symbols[id];
     if reference.kind == lsp::ReferenceKind::Write
-        || matches!(symbol.kind, db::SymbolKind::Variable { .. })
+        || matches!(symbol.kind, db::SymbolKind::Variable(_))
     {
         return None;
     }

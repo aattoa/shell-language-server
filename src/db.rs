@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 define_index!(pub SymbolId as u32);
+define_index!(pub FunctionId as u32);
+define_index!(pub VariableId as u32);
 define_index!(pub DocumentId as u32);
 
 pub struct Location {
@@ -12,16 +14,20 @@ pub struct Location {
     pub view: util::View,
 }
 
+pub struct Variable {
+    pub description: Option<String>,
+    pub first_assign_line: Option<u32>,
+}
+
+pub struct Function {
+    pub description: Option<String>,
+    pub definition: Option<Location>,
+    pub parameters: Vec<util::View>,
+}
+
 pub enum SymbolKind {
-    Variable {
-        description: Option<String>,
-        first_assign_line: Option<u32>,
-    },
-    Function {
-        description: Option<String>,
-        definition: Option<Location>,
-        parameters: Vec<util::View>,
-    },
+    Variable(VariableId),
+    Function(FunctionId),
     Command,
     Builtin,
 }
@@ -48,6 +54,8 @@ pub struct Action {
 pub struct DocumentInfo {
     pub diagnostics: Vec<lsp::Diagnostic>,
     pub references: Vec<SymbolReference>,
+    pub functions: IndexVec<Function, FunctionId>,
+    pub variables: IndexVec<Variable, VariableId>,
     pub symbols: IndexVec<Symbol, SymbolId>,
     pub actions: Vec<Action>,
     pub tokens: lsp::SemanticTokensData,
@@ -104,6 +112,19 @@ impl Database {
     }
 }
 
+impl DocumentInfo {
+    pub fn new_variable(&mut self, name: String) -> SymbolId {
+        let variable = self.variables.push(Variable { description: None, first_assign_line: None });
+        self.symbols.push(Symbol::new(name, SymbolKind::Variable(variable)))
+    }
+    pub fn new_function(&mut self, name: String, function: Function) -> SymbolId {
+        self.symbols.push(Symbol::new(name, SymbolKind::Function(self.functions.push(function))))
+    }
+    pub fn new_command(&mut self, name: String) -> SymbolId {
+        self.symbols.push(Symbol::new(name, SymbolKind::Command))
+    }
+}
+
 impl Document {
     pub fn new(text: impl Into<String>) -> Self {
         Self { text: text.into(), info: DocumentInfo::default() }
@@ -121,14 +142,14 @@ impl Symbol {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::lsp;
 
     #[test]
     fn edit_document() {
         let pos = |line, character| lsp::Position { line, character };
         let range = |start, end| lsp::Range { start, end };
 
-        let mut document = Document::new("lo");
+        let mut document = super::Document::new("lo");
         assert_eq!(document.text, "lo");
         document.edit(range(pos(0, 0), pos(0, 0)), "hel");
         assert_eq!(document.text, "hello");

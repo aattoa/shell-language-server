@@ -67,8 +67,7 @@ fn command_symbol(ctx: &mut Context, word: Token) -> db::SymbolId {
     let name = lex::escape(word.view.string(ctx.document));
     ctx.commands.get(name.as_ref()).copied().unwrap_or_else(|| {
         let name = name.into_owned();
-        let kind = db::SymbolKind::Command;
-        let id = ctx.info.symbols.push(db::Symbol::new(name.clone(), kind));
+        let id = ctx.info.new_command(name.clone());
         ctx.commands.insert(name, id);
         id
     })
@@ -78,8 +77,7 @@ fn variable_symbol(ctx: &mut Context, word: Token) -> db::SymbolId {
     let name = lex::escape(word.view.string(ctx.document));
     ctx.variables.get(name.as_ref()).copied().unwrap_or_else(|| {
         let name = name.into_owned();
-        let kind = db::SymbolKind::Variable { description: None, first_assign_line: None };
-        let id = ctx.info.symbols.push(db::Symbol::new(name.clone(), kind));
+        let id = ctx.info.new_variable(name.clone());
         ctx.variables.insert(name, id);
         id
     })
@@ -108,11 +106,11 @@ fn add_var_write(ctx: &mut Context, word: Token) -> db::SymbolId {
 
 fn define_function(ctx: &mut Context, word: Token) -> db::SymbolId {
     let name = lex::escape(word.view.string(ctx.document)).into_owned();
-    let id = ctx.info.symbols.push(db::Symbol::new(name.clone(), db::SymbolKind::Function {
+    let id = ctx.info.new_function(name.clone(), db::Function {
         description: ctx.desc_annotation.take(),
         definition: None,
         parameters: std::mem::take(&mut ctx.param_annotations),
-    }));
+    });
     let reference = lsp::Reference::write(word.range);
     ctx.info.references.push(db::SymbolReference { reference, id });
     ctx.commands.insert(name, id);
@@ -488,9 +486,10 @@ fn extract_builtin_unset(ctx: &mut Context) -> ParseResult<()> {
     Ok(())
 }
 
-fn set_function_location(ctx: &mut Context, id: db::SymbolId, location: db::Location) {
-    match &mut ctx.info.symbols[id].kind {
-        db::SymbolKind::Function { definition, .. } => {
+fn set_function_location(ctx: &mut Context, sym_id: db::SymbolId, location: db::Location) {
+    match ctx.info.symbols[sym_id].kind {
+        db::SymbolKind::Function(var_id) => {
+            let db::Function { definition, .. } = &mut ctx.info.functions[var_id];
             *definition = Some(location);
         }
         _ => unreachable!(),
@@ -657,16 +656,17 @@ fn collect_references(info: &mut db::DocumentInfo) {
 // TODO: Share symbols between documents.
 fn prepare_environment(ctx: &mut Context, settings: &Settings) {
     if settings.environment.variables {
-        for variable in env::variables() {
-            ctx.variables.insert(variable.name.clone(), ctx.info.symbols.push(variable));
+        for name in env::variables() {
+            ctx.variables.insert(name.clone(), ctx.info.new_variable(name));
         }
     }
     if settings.environment.executables {
-        let path = (settings.environment.path.as_deref().map(Cow::Borrowed))
-            .or_else(|| env::path_variable().map(Cow::Owned));
-
-        for executable in path.iter().flat_map(|path| env::executables(path)) {
-            ctx.commands.insert(executable.name.clone(), ctx.info.symbols.push(executable));
+        if let Some(path) = (settings.environment.path.as_deref().map(Cow::Borrowed))
+            .or_else(|| env::path_variable().map(Cow::Owned))
+        {
+            for name in env::executables(&path) {
+                ctx.commands.insert(name.clone(), ctx.info.new_command(name));
+            }
         }
     }
     for name in shell::builtins(ctx.info.shell).iter().copied().map(String::from) {
@@ -686,9 +686,10 @@ pub fn parse(input: &str, settings: &Settings) -> db::DocumentInfo {
 }
 
 fn add_var_assign(ctx: &mut Context, word: Token) {
-    let id = add_var_write(ctx, word);
-    match &mut ctx.info.symbols[id].kind {
-        db::SymbolKind::Variable { first_assign_line, description } => {
+    let sym_id = add_var_write(ctx, word);
+    match ctx.info.symbols[sym_id].kind {
+        db::SymbolKind::Variable(var_id) => {
+            let db::Variable { description, first_assign_line } = &mut ctx.info.variables[var_id];
             if first_assign_line.is_none() {
                 *first_assign_line = Some(word.range.start.line);
                 *description = ctx.desc_annotation.take();
