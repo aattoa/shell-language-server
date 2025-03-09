@@ -27,6 +27,7 @@ based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
 - Rename variables and functions
 - Complete variable, function, and command names
 - Enhanced syntax highlighting with semantic tokens
+- Document symbols
 - Code actions
     - Insert full command path
     - Apply Shellcheck fixes
@@ -38,7 +39,6 @@ based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
 
 ## Planned features
 
-- Document symbols
 - Signature help
 - Module directives
 - Scoped locals and parameters
@@ -49,6 +49,7 @@ based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
     - Command arguments
     - Comment directives
 - Code actions:
+    - Inline environment variables
     - Insert Shellcheck directives
     - Change shebang based on usage
 

@@ -33,6 +33,7 @@ fn server_capabilities(settings: &Settings) -> Json {
         "hoverProvider": true,
         "definitionProvider": true,
         "referencesProvider": true,
+        "documentSymbolProvider": true,
         "documentHighlightProvider": true,
         "documentFormattingProvider": settings.integrate.shfmt,
         "documentRangeFormattingProvider": settings.integrate.shfmt,
@@ -170,17 +171,17 @@ fn symbol_markup(
     use std::fmt::Write;
     match &symbol.kind {
         &db::SymbolKind::Variable(id) => {
-            let db::Variable { description, first_assign_line } = &document.info.variables[id];
+            let db::Variable { description, first_assignment } = &document.info.variables[id];
             let mut markdown = format!("# Variable `{}`", symbol.name);
             if let Some(desc) = description {
                 write!(markdown, "\n{desc}")?;
             }
-            if let &Some(line) = first_assign_line {
+            if let Some(location) = first_assignment {
                 write!(
                     markdown,
                     "\n---\nFirst assignment on line {}:\n```sh\n{}\n```",
-                    line + 1,
-                    get_line(document, line)?.trim()
+                    location.range.start.line + 1,
+                    get_line(document, location.range.start.line)?.trim()
                 )?;
             }
             Ok(lsp::MarkupContent::markdown(markdown))
@@ -283,6 +284,32 @@ fn action_insert_path(
         "title": "Insert full command path",
         "edit": { "changes": { params.document.uri.to_string(): [edit] } }
     }))
+}
+
+fn document_symbol(info: &db::DocumentInfo, symbol: &db::Symbol) -> Option<lsp::DocumentSymbol> {
+    let sym = |kind, range| lsp::DocumentSymbol {
+        name: symbol.name.clone(),
+        kind,
+        range,
+        selection_range: range,
+    };
+    match symbol.kind {
+        db::SymbolKind::Function(id) => {
+            Some(sym(lsp::SymbolKind::Function, info.functions[id].definition?.range))
+        }
+        db::SymbolKind::Variable(id) => {
+            Some(sym(lsp::SymbolKind::Variable, info.variables[id].first_assignment?.range))
+        }
+        _ => None,
+    }
+}
+
+fn document_symbols(info: &db::DocumentInfo) -> Json {
+    let mut symbols = (info.symbols.underlying.iter())
+        .filter_map(|symbol| document_symbol(info, symbol))
+        .collect::<Vec<_>>();
+    symbols.sort_by_key(|symbol| symbol.range.start.line);
+    json!([symbols])
 }
 
 fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Json, rpc::Error> {
@@ -400,6 +427,11 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
             let params: lsp::DocumentIdentifierParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
             Ok(json!({ "data": document.info.tokens }))
+        }
+        "textDocument/documentSymbol" => {
+            let params: lsp::DocumentIdentifierParams = from_value(params)?;
+            let document = get_document(&server.db, &params.document)?;
+            Ok(document_symbols(&document.info))
         }
         _ => Err(rpc::Error::method_not_found(method)),
     }

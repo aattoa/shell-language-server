@@ -173,6 +173,21 @@ pub struct CompletionItem {
     pub documentation: Option<MarkupContent>,
 }
 
+#[derive(Clone, Copy)]
+pub enum SymbolKind {
+    Function = 12,
+    Variable = 13,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentSymbol {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub range: Range,
+    pub selection_range: Range,
+}
+
 #[derive(Deserialize)]
 pub struct FormattingOptions {
     #[serde(rename = "tabSize")]
@@ -311,6 +326,12 @@ impl Serialize for CompletionItemKind {
 }
 
 impl Serialize for ReferenceKind {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_i32(*self as i32)
+    }
+}
+
+impl Serialize for SymbolKind {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_i32(*self as i32)
     }

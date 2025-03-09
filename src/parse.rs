@@ -689,9 +689,9 @@ fn add_var_assign(ctx: &mut Context, word: Token) {
     let sym_id = add_var_write(ctx, word);
     match ctx.info.symbols[sym_id].kind {
         db::SymbolKind::Variable(var_id) => {
-            let db::Variable { description, first_assign_line } = &mut ctx.info.variables[var_id];
-            if first_assign_line.is_none() {
-                *first_assign_line = Some(word.range.start.line);
+            let db::Variable { description, first_assignment } = &mut ctx.info.variables[var_id];
+            if first_assignment.is_none() {
+                *first_assignment = Some(db::Location { range: word.range, view: word.view });
                 *description = ctx.desc_annotation.take();
             }
         }

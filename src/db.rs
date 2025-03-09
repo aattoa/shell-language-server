@@ -9,6 +9,7 @@ define_index!(pub FunctionId as u32);
 define_index!(pub VariableId as u32);
 define_index!(pub DocumentId as u32);
 
+#[derive(Clone, Copy)]
 pub struct Location {
     pub range: lsp::Range,
     pub view: util::View,
@@ -16,7 +17,7 @@ pub struct Location {
 
 pub struct Variable {
     pub description: Option<String>,
-    pub first_assign_line: Option<u32>,
+    pub first_assignment: Option<Location>,
 }
 
 pub struct Function {
@@ -25,6 +26,7 @@ pub struct Function {
     pub parameters: Vec<util::View>,
 }
 
+#[derive(Clone, Copy)]
 pub enum SymbolKind {
     Variable(VariableId),
     Function(FunctionId),
@@ -114,7 +116,7 @@ impl Database {
 
 impl DocumentInfo {
     pub fn new_variable(&mut self, name: String) -> SymbolId {
-        let variable = self.variables.push(Variable { description: None, first_assign_line: None });
+        let variable = self.variables.push(Variable { description: None, first_assignment: None });
         self.symbols.push(Symbol::new(name, SymbolKind::Variable(variable)))
     }
     pub fn new_function(&mut self, name: String, function: Function) -> SymbolId {
