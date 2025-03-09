@@ -26,7 +26,7 @@ fn server_capabilities(settings: &Settings) -> Json {
         "semanticTokensProvider": {
             "legend": {
                 "tokenTypes": ["keyword", "parameter", "string"],
-                "tokenModifiers": [],
+                "tokenModifiers": ["documentation"],
             },
             "full": true,
         },
@@ -309,7 +309,7 @@ fn document_symbols(info: &db::DocumentInfo) -> Json {
         .filter_map(|symbol| document_symbol(info, symbol))
         .collect::<Vec<_>>();
     symbols.sort_by_key(|symbol| symbol.range.start.line);
-    json!([symbols])
+    json!(symbols)
 }
 
 fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Json, rpc::Error> {

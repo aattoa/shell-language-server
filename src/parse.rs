@@ -187,6 +187,7 @@ fn parse_comment(ctx: &mut Context, token: Token) {
             position: token.range.start,
             width: token.range.end.character - token.range.start.character - arg_width,
             kind: lsp::SemanticTokenKind::Keyword,
+            modifier: lsp::SemanticTokenModifier::Documentation,
         });
 
         let remaining = |kind| lsp::SemanticToken {
@@ -196,6 +197,7 @@ fn parse_comment(ctx: &mut Context, token: Token) {
             },
             width: arg_width,
             kind,
+            modifier: lsp::SemanticTokenModifier::Documentation,
         };
 
         match &line[..offset] {

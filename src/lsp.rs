@@ -234,10 +234,17 @@ pub enum SemanticTokenKind {
     String = 2,
 }
 
+#[derive(Clone, Copy)]
+pub enum SemanticTokenModifier {
+    None = 0,
+    Documentation = 1,
+}
+
 pub struct SemanticToken {
     pub position: Position,
     pub width: u32,
     pub kind: SemanticTokenKind,
+    pub modifier: SemanticTokenModifier,
 }
 
 #[derive(Default)]
@@ -354,14 +361,17 @@ impl Serialize for SemanticTokensData {
         use serde::ser::SerializeSeq;
         let mut seq = s.serialize_seq(Some(self.data.len() * 5))?;
         let mut prev = Position::default();
-        for &SemanticToken { position: Position { line, character }, width, kind } in &self.data {
-            if line != prev.line {
+        for &SemanticToken { position, width, kind, modifier } in &self.data {
+            if position.line != prev.line {
                 prev.character = 0;
             }
-            for integer in [line - prev.line, character - prev.character, width, kind as u32, 0] {
-                seq.serialize_element(&integer)?;
-            }
-            prev = Position { line, character };
+            let mut elem = |elem: u32| seq.serialize_element(&elem);
+            elem(position.line - prev.line)?;
+            elem(position.character - prev.character)?;
+            elem(width)?;
+            elem(kind as u32)?;
+            elem(modifier as u32)?;
+            prev = position;
         }
         seq.end()
     }
