@@ -90,6 +90,11 @@ fn text_edit(replacement: Replacement) -> lsp::TextEdit {
     lsp::TextEdit { range: range(replacement.range), new_text: replacement.new_text }
 }
 
+/// Identify diagnostics that are not helpful by themselves.
+fn is_context_diagnostic(code: i32) -> bool {
+    matches!(code, 1009 | 1072 | 1073) // https://www.shellcheck.net/wiki
+}
+
 pub struct Info {
     pub diagnostics: Vec<lsp::Diagnostic>,
     pub actions: Vec<db::Action>,
@@ -105,7 +110,9 @@ fn info(items: Vec<Item>) -> Info {
                 range: range(comment.range),
             });
         }
-        info.diagnostics.push(diagnostic(comment));
+        if !is_context_diagnostic(comment.code) {
+            info.diagnostics.push(diagnostic(comment));
+        }
     }
     info
 }
