@@ -44,10 +44,6 @@ fn server_capabilities(settings: &Settings) -> Json {
     })
 }
 
-fn is_path(name: &str) -> bool {
-    name.contains(std::path::MAIN_SEPARATOR)
-}
-
 fn document_id(
     db: &db::Database,
     id: &lsp::DocumentIdentifier,
@@ -76,14 +72,18 @@ fn find_symbol(info: &db::DocumentInfo, position: lsp::Position) -> Option<db::S
         .map(|index| info.references[index])
 }
 
+fn symbol_references(
+    info: &db::DocumentInfo,
+    symbol: db::SymbolId,
+) -> impl Iterator<Item = lsp::Reference> + '_ {
+    info.symbols[symbol].ref_indices.iter().map(|&index| info.references[index as usize].reference)
+}
+
 fn find_references(
     info: &db::DocumentInfo,
     position: lsp::Position,
 ) -> impl Iterator<Item = lsp::Reference> + '_ {
-    find_symbol(info, position)
-        .into_iter()
-        .flat_map(|symbol| info.symbols[symbol.id].ref_indices.iter())
-        .map(|&index| info.references[index as usize].reference)
+    find_symbol(info, position).into_iter().flat_map(|symbol| symbol_references(info, symbol.id))
 }
 
 fn collect_references<T>(
@@ -94,8 +94,27 @@ fn collect_references<T>(
     find_references(&document.info, position).map(projection).collect()
 }
 
-fn find_definition(info: &db::DocumentInfo, position: lsp::Position) -> Option<lsp::Reference> {
-    find_references(info, position).find(|reference| reference.kind == lsp::ReferenceKind::Write)
+fn is_path(name: &str) -> bool {
+    name.contains(std::path::MAIN_SEPARATOR)
+}
+
+fn find_definition(
+    info: &db::DocumentInfo,
+    params: lsp::PositionParams,
+    settings: &Settings,
+) -> Option<lsp::Location> {
+    let symbol = find_symbol(info, params.position)?;
+    match info.symbols[symbol.id].kind {
+        db::SymbolKind::Builtin => None,
+        db::SymbolKind::Command => {
+            let name = info.symbols[symbol.id].name.as_str();
+            let path = if is_path(name) { name.into() } else { find_executable(name, settings)? };
+            env::is_script(&path).then_some(lsp::Location::document(path))
+        }
+        _ => symbol_references(info, symbol.id)
+            .find(|reference| reference.kind == lsp::ReferenceKind::Write)
+            .map(|reference| lsp::Location { uri: params.document.uri, range: reference.range }),
+    }
 }
 
 fn get_line(document: &db::Document, line: u32) -> Result<&str, rpc::Error> {

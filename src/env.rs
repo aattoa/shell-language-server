@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
@@ -34,4 +35,11 @@ pub fn executable_names(directory: &Path) -> impl Iterator<Item = String> {
 
 pub fn variables() -> impl Iterator<Item = String> {
     std::env::vars_os().filter_map(|var| var.0.into_string().ok())
+}
+
+pub fn is_script(path: &Path) -> bool {
+    std::fs::File::open(path).is_ok_and(|mut file| {
+        let mut buffer = [0u8; 3];
+        file.read_exact(&mut buffer).is_ok() && buffer.as_slice() == b"#!/"
+    })
 }

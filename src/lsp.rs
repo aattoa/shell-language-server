@@ -311,6 +311,12 @@ impl MarkupContent {
     }
 }
 
+impl Location {
+    pub fn document(path: PathBuf) -> Self {
+        Self { uri: DocumentURI { path }, range: Range::default() }
+    }
+}
+
 impl Display for DocumentURI {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "file://{}", self.path.display())
