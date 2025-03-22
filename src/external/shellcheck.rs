@@ -1,5 +1,7 @@
 use crate::shell::Shell;
-use crate::{db, lsp};
+use crate::{config, db, lsp};
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 struct LevelVisitor;
 
@@ -95,6 +97,7 @@ fn is_context_diagnostic(code: i32) -> bool {
     matches!(code, 1009 | 1072 | 1073) // https://www.shellcheck.net/wiki
 }
 
+#[derive(Default)]
 pub struct Info {
     pub diagnostics: Vec<lsp::Diagnostic>,
     pub actions: Vec<db::Action>,
@@ -117,25 +120,29 @@ fn info(items: Vec<Item>) -> Info {
     info
 }
 
-fn shell_flag(shell: Shell) -> &'static str {
-    // Treat unsupported shells as POSIX, since shellcheck can still provide useful hints.
+fn shell_flag(shell: Shell, config: &config::Shellcheck) -> Option<&'static str> {
     match shell {
-        Shell::Bash => "--shell=bash",
-        Shell::Ksh => "--shell=ksh",
-        _ => "--shell=sh",
+        Shell::Ksh => Some("--shell=ksh"),
+        Shell::Bash => Some("--shell=bash"),
+        Shell::Posix => Some("--shell=sh"),
+        _ => config.posix_fallback.then_some("--shell=sh"),
     }
 }
 
-pub fn analyze(shell: Shell, document_text: &str) -> std::io::Result<Info> {
-    use std::process::{Command, Stdio};
+pub fn analyze(text: &str, shell: Shell, config: &config::Shellcheck) -> std::io::Result<Info> {
+    let Some(shell_flag) = shell_flag(shell, config)
+    else {
+        return Ok(Info::default());
+    };
 
     let mut child = Command::new("shellcheck")
-        .args([shell_flag(shell), "--format=json", "-"])
+        .args(config.arguments.as_slice())
+        .args([shell_flag, "--format=json", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()?;
 
-    std::io::Write::write_all(&mut child.stdin.take().unwrap(), document_text.as_bytes())?;
+    child.stdin.take().unwrap().write_all(text.as_bytes())?;
     let items: Vec<Item> = serde_json::from_reader(child.stdout.take().unwrap())?;
 
     child.wait()?;

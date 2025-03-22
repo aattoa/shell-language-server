@@ -1,11 +1,14 @@
+use crate::config;
 use crate::shell::Shell;
 use std::process::{Command, Stdio};
 
-pub fn documentation(shell: Shell, name: &str) -> Option<String> {
+pub fn documentation(shell: Shell, name: &str, config: &config::Man) -> Option<String> {
     let sections = if shell == Shell::Posix { "1p,1" } else { "1,1p" };
 
     let mut child = Command::new("man")
-        .args(["-s", sections, "--", name])
+        .args(["-s", sections])
+        .args(config.arguments.as_slice())
+        .args(["--", name])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .spawn()

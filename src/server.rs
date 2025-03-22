@@ -1,8 +1,9 @@
 use crate::config::{Cmdline, Settings};
 use crate::shell::Shell;
-use crate::{db, env, external, lsp, parse, rpc};
+use crate::{config, db, env, external, lsp, parse, rpc};
 use serde_json::{Value as Json, from_value, json};
 use std::borrow::Cow;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 #[derive(Default)]
@@ -35,20 +36,24 @@ fn server_capabilities(settings: &Settings) -> Json {
         "referencesProvider": true,
         "documentSymbolProvider": true,
         "documentHighlightProvider": true,
-        "documentFormattingProvider": settings.integrate.shfmt,
-        "documentRangeFormattingProvider": settings.integrate.shfmt,
+        "documentFormattingProvider": settings.integrate.shfmt.enable,
+        "documentRangeFormattingProvider": settings.integrate.shfmt.enable,
         "codeActionProvider": true,
         "renameProvider": { "prepareProvider": true },
-        "completionProvider": {},
+        "completionProvider": { "triggerCharacters": ["$"] },
     })
+}
+
+fn is_path(name: &str) -> bool {
+    name.contains(std::path::MAIN_SEPARATOR)
 }
 
 fn document_id(
     db: &db::Database,
-    identifier: &lsp::DocumentIdentifier,
+    id: &lsp::DocumentIdentifier,
 ) -> Result<db::DocumentId, rpc::Error> {
-    db.document_paths.get(&identifier.uri.path).copied().ok_or_else(|| {
-        let path = identifier.uri.path.display();
+    db.document_paths.get(&id.uri.path).copied().ok_or_else(|| {
+        let path = id.uri.path.display();
         rpc::Error::invalid_params(format!("Unopened document referenced: '{path}'",))
     })
 }
@@ -144,15 +149,16 @@ fn function_completions(document: &db::Document, range: lsp::Range, prefix: &str
         .collect()
 }
 
-fn find_executable(name: &str, settings: &Settings) -> Option<std::path::PathBuf> {
+fn find_executable(name: &str, settings: &Settings) -> Option<PathBuf> {
     (settings.environment.path.as_deref().map(Cow::Borrowed))
-        .or_else(|| env::path_variable().map(Cow::Owned))
-        .and_then(|path| env::find_executable(name, &path))
+        .or_else(|| env::path_directories().map(Cow::Owned))
+        .and_then(|dirs| dirs.iter().find_map(|dir| env::find_executable(name, dir)))
 }
 
 fn manual(shell: Shell, name: &str, settings: &Settings) -> Option<String> {
-    if settings.integrate.man && !name.contains('/') && !name.contains('\\') {
-        external::man::documentation(shell, name)
+    if settings.integrate.man.enable {
+        let name = if is_path(name) { Path::new(name).file_name()?.to_str()? } else { name };
+        external::man::documentation(shell, name, &settings.integrate.man)
     }
     else {
         None
@@ -160,7 +166,7 @@ fn manual(shell: Shell, name: &str, settings: &Settings) -> Option<String> {
 }
 
 fn help(shell: Shell, name: &str, settings: &Settings) -> Option<String> {
-    if settings.integrate.help { external::help::documentation(shell, name) } else { None }
+    if settings.integrate.help.enable { external::help::documentation(shell, name) } else { None }
 }
 
 fn symbol_markup(
@@ -246,8 +252,12 @@ fn symbol_hover(
 
 fn analyze(document: &mut db::Document, settings: &Settings) {
     document.info = parse::parse(&document.text, settings);
-    if settings.integrate.shellcheck {
-        match external::shellcheck::analyze(document.info.shell, &document.text) {
+    if settings.integrate.shellcheck.enable {
+        match external::shellcheck::analyze(
+            &document.text,
+            document.info.shell,
+            &settings.integrate.shellcheck,
+        ) {
             Ok(external::shellcheck::Info { diagnostics, actions }) => {
                 document.info.diagnostics.extend(diagnostics);
                 document.info.actions.extend(actions);
@@ -255,15 +265,6 @@ fn analyze(document: &mut db::Document, settings: &Settings) {
             Err(error) => eprintln!("[debug] Shellcheck failed: {error}"),
         }
     }
-}
-
-fn format(
-    shell: Shell,
-    options: lsp::FormattingOptions,
-    document_text: &str,
-) -> Result<String, rpc::Error> {
-    external::shfmt::format(shell, options, document_text)
-        .map_err(|error| rpc::Error::request_failed(error.to_string()))
 }
 
 fn action_insert_path(
@@ -305,27 +306,52 @@ fn document_symbol(info: &db::DocumentInfo, symbol: &db::Symbol) -> Option<lsp::
 }
 
 fn document_symbols(info: &db::DocumentInfo) -> Json {
-    let mut symbols = (info.symbols.underlying.iter())
-        .filter_map(|symbol| document_symbol(info, symbol))
-        .collect::<Vec<_>>();
+    let mut symbols: Vec<lsp::DocumentSymbol> =
+        info.symbols.underlying.iter().filter_map(|symbol| document_symbol(info, symbol)).collect();
     symbols.sort_by_key(|symbol| symbol.range.start.line);
     json!(symbols)
 }
 
+fn format(
+    text: &str,
+    range: lsp::Range,
+    shell: Shell,
+    config: &config::Shfmt,
+    options: lsp::FormattingOptions,
+) -> std::io::Result<Json> {
+    if config.enable {
+        if let Some(new_text) = external::shfmt::format(text, shell, config, options)? {
+            return Ok(json!([lsp::TextEdit { range, new_text }]));
+        }
+    }
+    Ok(json!([]))
+}
+
+fn initialize(server: &mut Server, params: lsp::InitializeParams) -> Json {
+    if std::mem::replace(&mut server.initialized, true) {
+        eprintln!("[debug] Received initialize request when initialized");
+    }
+    if let Some(settings) = params.settings {
+        server.settings = settings;
+    }
+    if server.settings.integrate.shellcheck.enable && !external::exists("shellcheck") {
+        server.settings.integrate.shellcheck.enable = false;
+    }
+    if server.settings.integrate.shfmt.enable && !external::exists("shfmt") {
+        server.settings.integrate.shfmt.enable = false;
+    }
+    if server.settings.integrate.man.enable && !external::exists("man") {
+        server.settings.integrate.man.enable = false;
+    }
+    json!({
+        "capabilities": server_capabilities(&server.settings),
+        "serverInfo": { "name": "shell-language-server" },
+    })
+}
+
 fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Json, rpc::Error> {
     match method {
-        "initialize" => {
-            if std::mem::replace(&mut server.initialized, true) {
-                eprintln!("[debug] Received initialize request when initialized");
-            }
-            if let lsp::InitializeParams { settings: Some(settings) } = from_value(params)? {
-                server.settings = settings;
-            }
-            Ok(json!({
-                "capabilities": server_capabilities(&server.settings),
-                "serverInfo": { "name": "shell-language-server" },
-            }))
-        }
+        "initialize" => Ok(initialize(server, from_value(params)?)),
         "shutdown" => {
             if !std::mem::replace(&mut server.initialized, false) {
                 eprintln!("[debug] Received uninitialize request when uninitialized");
@@ -341,8 +367,8 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
         "textDocument/definition" => {
             let params: lsp::PositionParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
-            let loc = |r: lsp::Reference| json!({ "uri": params.document.uri, "range": r.range });
-            Ok(find_definition(&document.info, params.position).map_or(Json::Null, loc))
+            let definition = find_definition(&document.info, params, &server.settings);
+            Ok(definition.map_or(Json::Null, |location| json!(location)))
         }
         "textDocument/references" => {
             let params: lsp::PositionParams = from_value(params)?;
@@ -396,15 +422,24 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
         "textDocument/formatting" => {
             let params: lsp::FormattingParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
-            let new_text = format(document.info.shell, params.options, &document.text)?;
-            Ok(json!([lsp::TextEdit { range: lsp::Range::MAX, new_text }]))
+            Ok(format(
+                &document.text,
+                lsp::Range::MAX,
+                document.info.shell,
+                &server.settings.integrate.shfmt,
+                params.options,
+            )?)
         }
         "textDocument/rangeFormatting" => {
             let params: lsp::RangeFormattingParams = from_value(params)?;
             let document = get_document(&server.db, &params.format.document)?;
-            let text = &document.text[db::text_range(&document.text, params.range)];
-            let new_text = format(document.info.shell, params.format.options, text)?;
-            Ok(json!([lsp::TextEdit { range: params.range, new_text }]))
+            Ok(format(
+                &document.text[db::text_range(&document.text, params.range)],
+                params.range,
+                document.info.shell,
+                &server.settings.integrate.shfmt,
+                params.format.options,
+            )?)
         }
         "textDocument/codeAction" => {
             let params: lsp::CodeActionParams = from_value(params)?;

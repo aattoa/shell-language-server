@@ -5,15 +5,14 @@ use std::process::{Command, Stdio};
 fn zsh_help(name: &str, shell: &str) -> Option<String> {
     let mut child = Command::new(shell)
         .env("PAGER", "cat") // The run-help script uses `more` if `PAGER` is not set.
-        .arg("-r") // Enable restricted mode. (principle of least privilege)
-        .arg("-s") // Read commands from stdin.
+        .args(["-r", "-s", "--", name])
         .stdout(Stdio::piped())
         .stdin(Stdio::piped())
         .spawn()
         .ok()?;
 
-    let script = format!("unalias run-help\nautoload -Uz run-help\nrun-help '{name}'");
-    child.stdin.take()?.write_all(script.as_bytes()).ok()?;
+    const SCRIPT: &[u8] = b"unalias run-help\nautoload -Uz run-help\nrun-help \"$1\"";
+    child.stdin.take()?.write_all(SCRIPT).ok()?;
 
     let stdout = std::io::read_to_string(child.stdout.take()?).ok()?;
     child.wait().ok()?.success().then_some(stdout)
@@ -21,8 +20,7 @@ fn zsh_help(name: &str, shell: &str) -> Option<String> {
 
 fn posix_help(name: &str, shell: &str) -> Option<String> {
     let mut child = Command::new(shell)
-        .arg("-c") // Read commands from the first non-option argument.
-        .arg(format!("help '{name}'"))
+        .args(["-c", "help \"$1\"", "--", name])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .spawn()

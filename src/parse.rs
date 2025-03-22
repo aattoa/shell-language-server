@@ -663,10 +663,14 @@ fn prepare_environment(ctx: &mut Context, settings: &Settings) {
         }
     }
     if settings.environment.executables {
-        if let Some(path) = (settings.environment.path.as_deref().map(Cow::Borrowed))
-            .or_else(|| env::path_variable().map(Cow::Owned))
+        if let Some(dirs) = (settings.environment.path.as_deref().map(Cow::Borrowed))
+            .or_else(|| env::path_directories().map(Cow::Owned))
         {
-            for name in env::executables(&path) {
+            let mut names: Vec<String> =
+                dirs.iter().flat_map(|dir| env::executable_names(dir)).collect();
+            names.sort_unstable();
+            names.dedup();
+            for name in names {
                 ctx.commands.insert(name.clone(), ctx.info.new_command(name));
             }
         }

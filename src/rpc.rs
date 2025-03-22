@@ -1,10 +1,9 @@
-use serde::{Deserialize, Serialize};
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct JsonRpc;
 
-#[derive(Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Request {
     #[serde(default)]
     pub params: serde_json::Value,
@@ -14,14 +13,14 @@ pub struct Request {
     pub jsonrpc: JsonRpc,
 }
 
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ResponseKind {
     Result(serde_json::Value),
     Error(Error),
 }
 
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct Response {
     pub id: Option<u32>,
     #[serde(flatten)]
@@ -29,7 +28,7 @@ pub struct Response {
     pub jsonrpc: JsonRpc,
 }
 
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct Error {
     pub code: ErrorCode,
     pub message: String,
@@ -45,7 +44,7 @@ pub enum ErrorCode {
     RequestFailed = -32803,
 }
 
-impl Serialize for ErrorCode {
+impl serde::Serialize for ErrorCode {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_i32(*self as i32)
     }
@@ -67,13 +66,13 @@ impl serde::de::Visitor<'_> for JsonRpcVisitor {
     }
 }
 
-impl<'de> Deserialize<'de> for JsonRpc {
+impl<'de> serde::Deserialize<'de> for JsonRpc {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<JsonRpc, D::Error> {
         d.deserialize_str(JsonRpcVisitor)
     }
 }
 
-impl Serialize for JsonRpc {
+impl serde::Serialize for JsonRpc {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(JsonRpc::VERSION)
     }
@@ -83,13 +82,13 @@ fn consume(input: &mut impl Read, bytes: usize) -> bool {
     input.bytes().take(bytes).count() == bytes
 }
 
-pub fn write_message(output: &mut impl Write, content: &str) -> io::Result<()> {
+pub fn write_message(output: &mut impl Write, content: &str) -> std::io::Result<()> {
     write!(output, "Content-Length: {}\r\n\r\n{}", content.len(), content)?;
     output.flush()
 }
 
-pub fn read_message(input: &mut impl Read) -> io::Result<String> {
-    let error = |msg| Err(io::Error::new(io::ErrorKind::InvalidInput, msg));
+pub fn read_message(input: &mut impl Read) -> std::io::Result<String> {
+    let error = |msg| Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, msg));
 
     if !consume(input, "Content-Length: ".len()) {
         return error("Missing Content-Length header.");
@@ -124,7 +123,7 @@ pub fn read_message(input: &mut impl Read) -> io::Result<String> {
 
 impl From<serde_json::Error> for Error {
     fn from(error: serde_json::Error) -> Error {
-        Error::invalid_params(error.to_string())
+        Self::invalid_params(error.to_string())
     }
 }
 
@@ -134,30 +133,36 @@ impl From<std::fmt::Error> for Error {
     }
 }
 
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Self::request_failed(format!("IO error: {error}"))
+    }
+}
+
 impl Error {
-    pub fn new(code: ErrorCode, message: impl Into<String>) -> Error {
-        Error { code, message: message.into() }
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self { code, message: message.into() }
     }
-    pub fn invalid_params(message: impl Into<String>) -> Error {
-        Error::new(ErrorCode::InvalidParams, message)
+    pub fn invalid_params(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::InvalidParams, message)
     }
-    pub fn internal_error(message: impl Into<String>) -> Error {
-        Error::new(ErrorCode::InternalError, message)
+    pub fn internal_error(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::InternalError, message)
     }
-    pub fn request_failed(message: impl Into<String>) -> Error {
-        Error::new(ErrorCode::RequestFailed, message)
+    pub fn request_failed(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::RequestFailed, message)
     }
-    pub fn method_not_found(method: &str) -> Error {
-        Error::new(ErrorCode::MethodNotFound, format!("Unhandled method: {method}"))
+    pub fn method_not_found(method: &str) -> Self {
+        Self::new(ErrorCode::MethodNotFound, format!("Unhandled method: {method}"))
     }
 }
 
 impl Response {
-    pub fn success(id: Option<u32>, result: serde_json::Value) -> Response {
-        Response { id, kind: ResponseKind::Result(result), jsonrpc: JsonRpc }
+    pub fn success(id: Option<u32>, result: serde_json::Value) -> Self {
+        Self { id, kind: ResponseKind::Result(result), jsonrpc: JsonRpc }
     }
-    pub fn error(id: Option<u32>, error: Error) -> Response {
-        Response { id, kind: ResponseKind::Error(error), jsonrpc: JsonRpc }
+    pub fn error(id: Option<u32>, error: Error) -> Self {
+        Self { id, kind: ResponseKind::Error(error), jsonrpc: JsonRpc }
     }
 }
 
