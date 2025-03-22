@@ -21,9 +21,17 @@ pub struct Location {
     pub view: db::View,
 }
 
+#[derive(Clone, Copy)]
+pub enum VariableKind {
+    Global,
+    Local,
+    Environment,
+}
+
 pub struct Variable {
     pub description: Option<String>,
     pub first_assignment: Option<Location>,
+    pub kind: VariableKind,
 }
 
 pub struct Function {
@@ -121,9 +129,8 @@ impl Database {
 }
 
 impl DocumentInfo {
-    pub fn new_variable(&mut self, name: String) -> SymbolId {
-        let variable = self.variables.push(Variable { description: None, first_assignment: None });
-        self.symbols.push(Symbol::new(name, SymbolKind::Variable(variable)))
+    pub fn new_variable(&mut self, name: String, variable: Variable) -> SymbolId {
+        self.symbols.push(Symbol::new(name, SymbolKind::Variable(self.variables.push(variable))))
     }
     pub fn new_function(&mut self, name: String, function: Function) -> SymbolId {
         self.symbols.push(Symbol::new(name, SymbolKind::Function(self.functions.push(function))))
@@ -154,6 +161,12 @@ impl SymbolReference {
     }
     pub fn write(range: lsp::Range, id: SymbolId) -> Self {
         Self { reference: lsp::Reference { range, kind: lsp::ReferenceKind::Write }, id }
+    }
+}
+
+impl Variable {
+    pub fn new(kind: VariableKind) -> Self {
+        Self { description: None, first_assignment: None, kind }
     }
 }
 

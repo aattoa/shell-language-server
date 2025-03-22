@@ -26,6 +26,7 @@ based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
 - Find and highlight references
 - Rename variables and functions
 - Complete variable, function, and command names
+- Scoped local variables
 - Additional diagnostics and code actions through [Shellcheck](https://www.shellcheck.net) integration
 - Document and range formatting through [shfmt](https://github.com/mvdan/sh) integration
 - Intelligent `man` and `help` integration based on the active shell
@@ -41,7 +42,6 @@ based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
 
 - Signature help
 - Module directives
-- Scoped locals and parameters
 - Highlight Shellcheck directives
 - Dynamically register capabilities on configuration change
 - Completion:

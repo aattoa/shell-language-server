@@ -188,6 +188,14 @@ fn help(shell: Shell, name: &str, settings: &Settings) -> Option<String> {
     if settings.integrate.help.enable { external::help::documentation(shell, name) } else { None }
 }
 
+fn describe_variable(kind: db::VariableKind) -> &'static str {
+    match kind {
+        db::VariableKind::Global => "Variable",
+        db::VariableKind::Local => "Local variable",
+        db::VariableKind::Environment => "Environment variable",
+    }
+}
+
 fn symbol_markup(
     document: &db::Document,
     symbol: &db::Symbol,
@@ -196,18 +204,21 @@ fn symbol_markup(
     use std::fmt::Write;
     match &symbol.kind {
         &db::SymbolKind::Variable(id) => {
-            let db::Variable { description, first_assignment } = &document.info.variables[id];
-            let mut markdown = format!("# Variable `{}`", symbol.name);
-            if let Some(desc) = description {
+            let variable = &document.info.variables[id];
+            let mut markdown = format!("# {} `{}`", describe_variable(variable.kind), symbol.name);
+            if let Some(desc) = &variable.description {
                 write!(markdown, "\n{desc}")?;
             }
-            if let Some(location) = first_assignment {
+            if let Some(location) = variable.first_assignment {
                 write!(
                     markdown,
                     "\n---\nFirst assignment on line {}:\n```sh\n{}\n```",
                     location.range.start.line + 1,
                     get_line(document, location.range.start.line)?.trim()
                 )?;
+            }
+            else {
+                write!(markdown, "\n---\nThis variable is not defined in this document.")?;
             }
             Ok(lsp::MarkupContent::markdown(markdown))
         }
@@ -218,7 +229,7 @@ fn symbol_markup(
                 write!(markdown, "\n{desc}")?;
             }
             if !parameters.is_empty() {
-                write!(markdown, "\n---\n## Parameters")?;
+                write!(markdown, "\n---\nParameters")?;
                 for (index, param) in parameters.iter().enumerate() {
                     write!(
                         markdown,

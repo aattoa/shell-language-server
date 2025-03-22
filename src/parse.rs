@@ -7,14 +7,19 @@ use std::collections::HashMap;
 
 type ParseResult<T> = Result<T, lsp::Diagnostic>;
 
+struct Annotations {
+    params: Vec<db::View>,
+    desc: Option<String>,
+}
+
 struct Context<'a> {
     info: db::DocumentInfo,
     lexer: Lexer<'a>,
     document: &'a str,
     commands: HashMap<String, db::SymbolId>,
     variables: HashMap<String, db::SymbolId>,
-    param_annotations: Vec<util::View>,
-    desc_annotation: Option<String>,
+    locals: Option<HashMap<String, db::SymbolId>>,
+    annotations: Annotations,
 }
 
 impl<'a> Context<'a> {
@@ -25,8 +30,8 @@ impl<'a> Context<'a> {
             document,
             commands: HashMap::new(),
             variables: HashMap::new(),
-            param_annotations: Vec::new(),
-            desc_annotation: None,
+            locals: None,
+            annotations: Annotations { params: Vec::new(), desc: None },
         }
     }
     fn error(&mut self, message: impl Into<String>) -> lsp::Diagnostic {
@@ -73,14 +78,19 @@ fn command_symbol(ctx: &mut Context, word: Token) -> db::SymbolId {
     })
 }
 
+fn new_variable(ctx: &mut Context, name: String) -> db::SymbolId {
+    let var = db::Variable::new(db::VariableKind::Global);
+    let id = ctx.info.new_variable(name.clone(), var);
+    ctx.variables.insert(name, id);
+    id
+}
+
 fn variable_symbol(ctx: &mut Context, word: Token) -> db::SymbolId {
     let name = lex::escape(word.view.string(ctx.document));
-    ctx.variables.get(name.as_ref()).copied().unwrap_or_else(|| {
-        let name = name.into_owned();
-        let id = ctx.info.new_variable(name.clone());
-        ctx.variables.insert(name, id);
-        id
-    })
+    (ctx.locals.as_ref())
+        .and_then(|locals| locals.get(name.as_ref()).copied())
+        .or_else(|| ctx.variables.get(name.as_ref()).copied())
+        .unwrap_or_else(|| new_variable(ctx, name.into_owned()))
 }
 
 fn add_cmd_ref(ctx: &mut Context, word: Token) {
@@ -103,9 +113,9 @@ fn add_var_write(ctx: &mut Context, word: Token) -> db::SymbolId {
 fn define_function(ctx: &mut Context, word: Token) -> db::SymbolId {
     let name = lex::escape(word.view.string(ctx.document)).into_owned();
     let id = ctx.info.new_function(name.clone(), db::Function {
-        description: ctx.desc_annotation.take(),
+        description: ctx.annotations.desc.take(),
         definition: None,
-        parameters: std::mem::take(&mut ctx.param_annotations),
+        parameters: std::mem::take(&mut ctx.annotations.params),
     });
     ctx.info.references.push(db::SymbolReference::write(word.range, id));
     ctx.commands.insert(name, id);
@@ -159,12 +169,12 @@ fn kind_matches(kinds: &'static [TokenKind]) -> impl Copy + Fn(Token) -> bool {
 
 fn add_description(ctx: &mut Context, annotation: db::View) {
     let string = annotation.string(ctx.document).trim_end();
-    if let Some(desc) = &mut ctx.desc_annotation {
+    if let Some(desc) = &mut ctx.annotations.desc {
         desc.push('\n');
         desc.push_str(string);
     }
     else {
-        ctx.desc_annotation = Some(String::from(string));
+        ctx.annotations.desc = Some(String::from(string));
     }
 }
 
@@ -201,7 +211,7 @@ fn parse_comment(ctx: &mut Context, token: Token) {
             }
             "param" => {
                 ctx.info.tokens.data.push(remaining(lsp::SemanticTokenKind::Parameter));
-                ctx.param_annotations.push(annotation);
+                ctx.annotations.params.push(annotation);
             }
             "" => ctx.warn(token.range, "Missing directive"),
             directive => ctx.warn(token.range, format!("Unrecognized directive: '{directive}'")),
@@ -445,6 +455,30 @@ fn extract_case(ctx: &mut Context) -> ParseResult<()> {
     Ok(())
 }
 
+fn extract_builtin_local(ctx: &mut Context) -> ParseResult<()> {
+    skip_whitespace(ctx);
+    while let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
+        if let Some(locals) = &mut ctx.locals {
+            let name = lex::escape(word.view.string(ctx.document)).into_owned();
+            let id = ctx.info.new_variable(name.clone(), db::Variable {
+                description: ctx.annotations.desc.take(),
+                first_assignment: Some(db::Location { range: word.range, view: word.view }),
+                kind: db::VariableKind::Local,
+            });
+            ctx.info.references.push(db::SymbolReference::write(word.range, id));
+            locals.insert(name, id);
+        }
+        else {
+            ctx.warn(word.range, "`local` is invalid outside of a function");
+        }
+        if ctx.consume(TokenKind::Equal) {
+            parse_value(ctx)?;
+        }
+        skip_whitespace(ctx);
+    }
+    Ok(())
+}
+
 fn extract_builtin_variable_declaration(ctx: &mut Context) -> ParseResult<()> {
     skip_whitespace(ctx);
     while let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
@@ -496,16 +530,24 @@ fn extract_function(ctx: &mut Context, word: Token) -> ParseResult<()> {
     if !is_identifier(word.view.string(ctx.document), ctx.info.shell) {
         ctx.warn(word.range, "Invalid function name");
     }
+
     let id = define_function(ctx, word);
-    skip_whitespace(ctx);
-    ctx.expect(TokenKind::ParenClose)?;
-    skip_empty_lines(ctx);
-    ctx.expect(TokenKind::BraceOpen)?;
-    skip_empty_lines(ctx);
-    extract_statements_until(ctx, kind_matches(&[TokenKind::BraceClose]));
-    let last = ctx.expect(TokenKind::BraceClose)?;
-    set_function_location(ctx, id, location(word, last));
-    Ok(())
+    let old_locals = std::mem::replace(&mut ctx.locals, Some(HashMap::new()));
+
+    let result = (|| {
+        skip_whitespace(ctx);
+        ctx.expect(TokenKind::ParenClose)?;
+        skip_empty_lines(ctx);
+        ctx.expect(TokenKind::BraceOpen)?;
+        skip_empty_lines(ctx);
+        extract_statements_until(ctx, kind_matches(&[TokenKind::BraceClose]));
+        let last = ctx.expect(TokenKind::BraceClose)?;
+        set_function_location(ctx, id, location(word, last));
+        Ok(())
+    })();
+
+    ctx.locals = old_locals;
+    result
 }
 
 fn extract_line_command(
@@ -533,6 +575,7 @@ fn extract_line_command(
                 match command.as_ref() {
                     "export" | "readonly" => extract_builtin_variable_declaration(ctx)?,
                     "unset" => extract_builtin_unset(ctx)?,
+                    "local" => extract_builtin_local(ctx)?,
                     _ => extract_arguments_until(ctx, end),
                 }
                 return Ok(());
@@ -652,7 +695,8 @@ fn collect_references(info: &mut db::DocumentInfo) {
 fn prepare_environment(ctx: &mut Context, settings: &Settings) {
     if settings.environment.variables {
         for name in env::variables() {
-            ctx.variables.insert(name.clone(), ctx.info.new_variable(name));
+            let var = db::Variable::new(db::VariableKind::Environment);
+            ctx.variables.insert(name.clone(), ctx.info.new_variable(name, var));
         }
     }
     if settings.environment.executables {
@@ -691,7 +735,7 @@ fn add_var_assign(ctx: &mut Context, word: Token) {
             let var = &mut ctx.info.variables[var_id];
             if var.first_assignment.is_none() {
                 var.first_assignment = Some(db::Location { range: word.range, view: word.view });
-                var.description = ctx.desc_annotation.take();
+                var.description = ctx.annotations.desc.take();
             }
         }
         _ => unreachable!(),
