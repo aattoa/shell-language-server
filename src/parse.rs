@@ -571,6 +571,12 @@ fn extract_line_command(
         let command = lex::escape(word.view.string(ctx.document));
         if let Some(&id) = ctx.commands.get(command.as_ref()) {
             if matches!(ctx.info.symbols[id].kind, db::SymbolKind::Builtin) {
+                ctx.info.tokens.data.push(lsp::SemanticToken {
+                    position: word.range.start,
+                    width: word.range.end.character - word.range.start.character,
+                    kind: lsp::SemanticTokenKind::Keyword,
+                    modifier: lsp::SemanticTokenModifier::None,
+                });
                 ctx.info.references.push(db::SymbolReference::read(word.range, id));
                 match command.as_ref() {
                     "export" | "readonly" => extract_builtin_variable_declaration(ctx)?,
