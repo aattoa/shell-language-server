@@ -1,6 +1,6 @@
 use crate::indexvec::IndexVec;
 use crate::shell::Shell;
-use crate::{define_index, lsp, util};
+use crate::{db, define_index, lsp};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -10,9 +10,15 @@ define_index!(pub VariableId as u32);
 define_index!(pub DocumentId as u32);
 
 #[derive(Clone, Copy)]
+pub struct View {
+    pub start: u32,
+    pub end: u32,
+}
+
+#[derive(Clone, Copy)]
 pub struct Location {
     pub range: lsp::Range,
-    pub view: util::View,
+    pub view: db::View,
 }
 
 pub struct Variable {
@@ -23,7 +29,7 @@ pub struct Variable {
 pub struct Function {
     pub description: Option<String>,
     pub definition: Option<Location>,
-    pub parameters: Vec<util::View>,
+    pub parameters: Vec<db::View>,
 }
 
 #[derive(Clone, Copy)]
@@ -40,7 +46,7 @@ pub struct Symbol {
     pub ref_indices: Vec<u32>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct SymbolReference {
     pub reference: lsp::Reference,
     pub id: SymbolId,
@@ -139,6 +145,21 @@ impl Document {
 impl Symbol {
     pub fn new(name: String, kind: SymbolKind) -> Self {
         Self { name, kind, ref_indices: Vec::new() }
+    }
+}
+
+impl SymbolReference {
+    pub fn read(range: lsp::Range, id: SymbolId) -> Self {
+        Self { reference: lsp::Reference { range, kind: lsp::ReferenceKind::Read }, id }
+    }
+    pub fn write(range: lsp::Range, id: SymbolId) -> Self {
+        Self { reference: lsp::Reference { range, kind: lsp::ReferenceKind::Write }, id }
+    }
+}
+
+impl View {
+    pub fn string(self, str: &str) -> &str {
+        &str[(self.start as usize)..(self.end as usize)]
     }
 }
 

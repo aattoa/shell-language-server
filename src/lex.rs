@@ -1,5 +1,5 @@
 use crate::poschars::PosChars;
-use crate::{lsp, util};
+use crate::{db, lsp};
 use std::borrow::Cow;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -36,10 +36,10 @@ pub enum TokenKind {
     ErrorUnterminatingRawString,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct Token {
     pub kind: TokenKind,
-    pub view: util::View,
+    pub view: db::View,
     pub range: lsp::Range,
 }
 
@@ -141,7 +141,7 @@ fn lex(chars: &mut PosChars, next: impl FnOnce(char, &mut PosChars) -> TokenKind
     let (p2, o2) = (chars.position, chars.offset);
     Some(Token {
         kind,
-        view: util::View { start: o1, end: o2 },
+        view: db::View { start: o1, end: o2 },
         range: lsp::Range { start: p1, end: p2 },
     })
 }

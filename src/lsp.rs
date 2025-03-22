@@ -3,42 +3,42 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::path::PathBuf;
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DocumentURI {
     pub path: PathBuf,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
 pub struct Position {
     pub line: u32,
     pub character: u32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Range {
     pub start: Position,
     pub end: Position,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Location {
     pub uri: DocumentURI,
     pub range: Range,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ReferenceKind {
     Read = 2,
     Write = 3,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Reference {
     pub range: Range,
     pub kind: ReferenceKind,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Error = 1,
     Warning = 2,
@@ -46,13 +46,13 @@ pub enum Severity {
     Hint = 4,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct DiagnosticRelated {
     pub location: Location,
     pub message: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct Diagnostic {
     pub range: Range,
     pub severity: Severity,
@@ -280,15 +280,6 @@ impl Range {
     }
 }
 
-impl Reference {
-    pub fn read(range: Range) -> Self {
-        Self { range, kind: ReferenceKind::Read }
-    }
-    pub fn write(range: Range) -> Self {
-        Self { range, kind: ReferenceKind::Write }
-    }
-}
-
 impl Diagnostic {
     pub fn new(range: Range, severity: Severity, message: impl Into<String>) -> Self {
         Self {
@@ -320,33 +311,28 @@ impl MarkupContent {
     }
 }
 
-impl Serialize for Severity {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_i32(*self as i32)
-    }
-}
-
-impl Serialize for CompletionItemKind {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_i32(*self as i32)
-    }
-}
-
-impl Serialize for ReferenceKind {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_i32(*self as i32)
-    }
-}
-
-impl Serialize for SymbolKind {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_i32(*self as i32)
-    }
-}
-
 impl Display for DocumentURI {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "file://{}", self.path.display())
+    }
+}
+
+struct DocumentURIVisitor;
+
+impl serde::de::Visitor<'_> for DocumentURIVisitor {
+    type Value = DocumentURI;
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a URI with file scheme")
+    }
+    fn visit_str<E: serde::de::Error>(self, str: &str) -> Result<DocumentURI, E> {
+        let uri = |path| DocumentURI { path: PathBuf::from(path) };
+        str.strip_prefix("file://").map(uri).ok_or_else(|| E::custom("bad URI scheme"))
+    }
+}
+
+impl<'de> Deserialize<'de> for DocumentURI {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_str(DocumentURIVisitor)
     }
 }
 
@@ -377,21 +363,17 @@ impl Serialize for SemanticTokensData {
     }
 }
 
-struct DocumentURIVisitor;
-
-impl serde::de::Visitor<'_> for DocumentURIVisitor {
-    type Value = DocumentURI;
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("a URI with file scheme")
-    }
-    fn visit_str<E: serde::de::Error>(self, str: &str) -> Result<DocumentURI, E> {
-        let uri = |path| DocumentURI { path: PathBuf::from(path) };
-        str.strip_prefix("file://").map(uri).ok_or_else(|| E::custom("bad URI scheme"))
-    }
+macro_rules! serialize_as_i32 {
+    ($ty:ty) => {
+        impl Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_i32(*self as i32)
+            }
+        }
+    };
 }
 
-impl<'de> Deserialize<'de> for DocumentURI {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        d.deserialize_str(DocumentURIVisitor)
-    }
-}
+serialize_as_i32!(Severity);
+serialize_as_i32!(CompletionItemKind);
+serialize_as_i32!(ReferenceKind);
+serialize_as_i32!(SymbolKind);

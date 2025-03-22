@@ -14,7 +14,6 @@ mod poschars;
 mod rpc;
 mod server;
 mod shell;
-mod util;
 
 const HELP: &str = r"Options:
   --help, -h           Display help information.

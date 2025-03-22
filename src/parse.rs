@@ -1,7 +1,7 @@
 use crate::config::Settings;
 use crate::lex::{self, Lexer, Token, TokenKind};
 use crate::shell::{self, Shell};
-use crate::{db, env, lsp, util};
+use crate::{db, env, lsp};
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -59,7 +59,7 @@ impl<'a> Context<'a> {
 fn location(first: Token, last: Token) -> db::Location {
     db::Location {
         range: lsp::Range { start: first.range.start, end: last.range.end },
-        view: util::View { start: first.view.start, end: last.view.end },
+        view: db::View { start: first.view.start, end: last.view.end },
     }
 }
 
@@ -84,24 +84,20 @@ fn variable_symbol(ctx: &mut Context, word: Token) -> db::SymbolId {
 }
 
 fn add_cmd_ref(ctx: &mut Context, word: Token) {
-    let reference = lsp::Reference::read(word.range);
     let id = command_symbol(ctx, word);
-    ctx.info.references.push(db::SymbolReference { reference, id });
-}
-
-fn add_var_ref(ctx: &mut Context, word: Token, kind: lsp::ReferenceKind) -> db::SymbolId {
-    let reference = lsp::Reference { range: word.range, kind };
-    let id = variable_symbol(ctx, word);
-    ctx.info.references.push(db::SymbolReference { reference, id });
-    id
+    ctx.info.references.push(db::SymbolReference::read(word.range, id));
 }
 
 fn add_var_read(ctx: &mut Context, word: Token) -> db::SymbolId {
-    add_var_ref(ctx, word, lsp::ReferenceKind::Read)
+    let id = variable_symbol(ctx, word);
+    ctx.info.references.push(db::SymbolReference::read(word.range, id));
+    id
 }
 
 fn add_var_write(ctx: &mut Context, word: Token) -> db::SymbolId {
-    add_var_ref(ctx, word, lsp::ReferenceKind::Write)
+    let id = variable_symbol(ctx, word);
+    ctx.info.references.push(db::SymbolReference::write(word.range, id));
+    id
 }
 
 fn define_function(ctx: &mut Context, word: Token) -> db::SymbolId {
@@ -111,8 +107,7 @@ fn define_function(ctx: &mut Context, word: Token) -> db::SymbolId {
         definition: None,
         parameters: std::mem::take(&mut ctx.param_annotations),
     });
-    let reference = lsp::Reference::write(word.range);
-    ctx.info.references.push(db::SymbolReference { reference, id });
+    ctx.info.references.push(db::SymbolReference::write(word.range, id));
     ctx.commands.insert(name, id);
     id
 }
@@ -121,8 +116,7 @@ fn unset_function(ctx: &mut Context, word: Token) {
     let name = lex::escape(word.view.string(ctx.document));
     if let Some(&id) = ctx.commands.get(name.as_ref()) {
         if let db::SymbolKind::Function { .. } = ctx.info.symbols[id].kind {
-            let reference = lsp::Reference::write(word.range);
-            ctx.info.references.push(db::SymbolReference { reference, id });
+            ctx.info.references.push(db::SymbolReference::write(word.range, id));
             ctx.commands.remove(name.as_ref());
             return;
         }
@@ -163,7 +157,7 @@ fn kind_matches(kinds: &'static [TokenKind]) -> impl Copy + Fn(Token) -> bool {
     |token| kinds.contains(&token.kind)
 }
 
-fn add_description(ctx: &mut Context, annotation: util::View) {
+fn add_description(ctx: &mut Context, annotation: db::View) {
     let string = annotation.string(ctx.document).trim_end();
     if let Some(desc) = &mut ctx.desc_annotation {
         desc.push('\n');
@@ -181,7 +175,7 @@ fn parse_comment(ctx: &mut Context, token: Token) {
     if let Some(line) = token.view.string(ctx.document).strip_prefix("##@").map(str::trim_start) {
         let offset = line.find(char::is_whitespace).unwrap_or(line.len());
         let arg_width = line[offset..].trim_start().len() as u32;
-        let annotation = util::View { start: token.view.end - arg_width, end: token.view.end };
+        let annotation = db::View { start: token.view.end - arg_width, end: token.view.end };
 
         ctx.info.tokens.data.push(lsp::SemanticToken {
             position: token.range.start,
@@ -535,8 +529,7 @@ fn extract_line_command(
         let command = lex::escape(word.view.string(ctx.document));
         if let Some(&id) = ctx.commands.get(command.as_ref()) {
             if matches!(ctx.info.symbols[id].kind, db::SymbolKind::Builtin) {
-                let reference = lsp::Reference::read(word.range);
-                ctx.info.references.push(db::SymbolReference { reference, id });
+                ctx.info.references.push(db::SymbolReference::read(word.range, id));
                 match command.as_ref() {
                     "export" | "readonly" => extract_builtin_variable_declaration(ctx)?,
                     "unset" => extract_builtin_unset(ctx)?,
@@ -695,10 +688,10 @@ fn add_var_assign(ctx: &mut Context, word: Token) {
     let sym_id = add_var_write(ctx, word);
     match ctx.info.symbols[sym_id].kind {
         db::SymbolKind::Variable(var_id) => {
-            let db::Variable { description, first_assignment } = &mut ctx.info.variables[var_id];
-            if first_assignment.is_none() {
-                *first_assignment = Some(db::Location { range: word.range, view: word.view });
-                *description = ctx.desc_annotation.take();
+            let var = &mut ctx.info.variables[var_id];
+            if var.first_assignment.is_none() {
+                var.first_assignment = Some(db::Location { range: word.range, view: word.view });
+                var.description = ctx.desc_annotation.take();
             }
         }
         _ => unreachable!(),
@@ -707,37 +700,39 @@ fn add_var_assign(ctx: &mut Context, word: Token) {
 
 #[cfg(test)]
 mod tests {
-    use crate::assert_let;
     use crate::config::Settings;
 
-    fn diagnostics(input: &str) -> Vec<super::lsp::Diagnostic> {
+    fn diagnostics(input: &str) -> Vec<crate::lsp::Diagnostic> {
         super::parse(input, &Settings::default()).diagnostics
     }
 
     #[test]
     fn conditional() {
-        assert_let!([] = diagnostics("if ls -la; then\n\tpwd\n\tuname -a\nfi\n").as_slice());
+        assert!(diagnostics("if ls -la; then\n\tpwd\n\tuname -a\nfi\n").is_empty());
     }
 
     #[test]
     fn for_loop() {
-        assert_let!([] = diagnostics("for x in a b c\ndo\n\techo $x\ndone\n").as_slice());
+        assert!(diagnostics("for x in a b c\ndo\n\techo $x\ndone\n").is_empty());
     }
 
     #[test]
     fn while_loop() {
-        assert_let!([] = diagnostics("while true; do echo $x; done\n").as_slice());
+        assert!(diagnostics("while true; do echo $x; done\n").is_empty());
     }
 
     #[test]
     fn assignment() {
-        assert_let!([] = diagnostics("a=b c=d e f\n").as_slice());
+        assert!(diagnostics("a=b c=d e f\n").is_empty());
     }
 
     #[test]
     fn dollar() {
-        let diags = diagnostics("echo $\n");
-        assert_let!([diag] = diags.as_slice());
-        assert!(diag.message.contains("literal"));
+        if let [diag] = diagnostics("echo $\n").as_slice() {
+            assert!(diag.message.contains("literal"));
+        }
+        else {
+            panic!();
+        }
     }
 }
