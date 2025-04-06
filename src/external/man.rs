@@ -3,7 +3,7 @@ use crate::shell::Shell;
 use std::process::{Command, Stdio};
 
 pub fn documentation(shell: Shell, name: &str, config: &config::Man) -> Option<String> {
-    let sections = if shell == Shell::Posix { "1p,1" } else { "1,1p" };
+    let sections = if shell == Shell::Posix { "1p,1,8" } else { "1,1p,8" };
 
     let mut child = Command::new("man")
         .args(["-s", sections])
