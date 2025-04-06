@@ -39,6 +39,7 @@ fn server_capabilities(settings: &Settings) -> Json {
         "documentFormattingProvider": settings.integrate.shfmt.enable,
         "documentRangeFormattingProvider": settings.integrate.shfmt.enable,
         "codeActionProvider": true,
+        "inlayHintProvider": { "resolveProvider": false },
         "renameProvider": { "prepareProvider": true },
         "completionProvider": { "triggerCharacters": ["$"] },
     })
@@ -349,7 +350,7 @@ fn analyze(document: &mut db::Document, settings: &Settings) {
 }
 
 fn action_insert_path(
-    params: &lsp::CodeActionParams,
+    params: &lsp::DocumentIdentifierRangeParams,
     document: &db::Document,
     settings: &Settings,
 ) -> Option<Json> {
@@ -430,6 +431,19 @@ fn initialize(server: &mut Server, params: lsp::InitializeParams) -> Json {
     })
 }
 
+fn parameter_hints(params: &[db::Location], range: lsp::Range) -> impl Iterator<Item = Json> + '_ {
+    (params.iter().map(|location| location.range.start).enumerate())
+        .filter(move |&(_, position)| range.contains(position))
+        .map(|(index, position)| {
+            json!({
+                "position": position,
+                "label": format!("${}:", index + 1),
+                "kind": 2, // Parameter
+                "paddingRight": true,
+            })
+        })
+}
+
 fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Json, rpc::Error> {
     match method {
         "initialize" => Ok(initialize(server, from_value(params)?)),
@@ -461,6 +475,15 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
             let params: lsp::PositionParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
             Ok(Json::Array(collect_references(document, params.position, |r| json!(r))))
+        }
+        "textDocument/inlayHint" => {
+            let lsp::DocumentIdentifierRangeParams { document, range } = from_value(params)?;
+            let document = get_document(&server.db, &document)?;
+            Ok((document.info.functions.underlying.iter())
+                .map(|function| function.parameters.as_slice())
+                .chain(document.info.script_parameters.iter().map(Vec::as_slice))
+                .flat_map(|params| parameter_hints(params, range))
+                .collect())
         }
         "textDocument/prepareRename" => {
             let params: lsp::PositionParams = from_value(params)?;
@@ -523,7 +546,7 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
             )?)
         }
         "textDocument/codeAction" => {
-            let params: lsp::CodeActionParams = from_value(params)?;
+            let params: lsp::DocumentIdentifierRangeParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
             Ok((document.info.actions.iter())
                 .filter(|action| {

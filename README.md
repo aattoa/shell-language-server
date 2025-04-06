@@ -37,6 +37,8 @@ based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
 - Document symbols
 - Enhanced syntax highlighting with semantic tokens
 - Annotations
+- Inlay hints:
+    - Parameter annotation indices
 
 ## Planned features
 
@@ -52,8 +54,6 @@ based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
     - Inline environment variables
     - Insert Shellcheck directives
     - Change shebang based on usage
-- Inlay hints:
-    - Parameter annotation index
 
 ## Annotations
 
@@ -66,10 +66,13 @@ Provide a general description of the next function or variable.
 
 ### `##@ param`
 Provide a description of the current function parameter or script parameter.
-The first annotation refers to `$1`, the second one refers to `$2`, and so on.
+The first annotation applies to `$1`, the second one to `$2`, and so on.
+
+The server provides inlay hints that label the annotations with their
+corresponding parameter indices.
 
 ### `##@ script`
-Apply previous `param` annotations to the current script instead of the next function.
+Apply previous `param` annotations to the script instead of the next function.
 
 ### Example use case
 

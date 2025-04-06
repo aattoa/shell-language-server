@@ -59,7 +59,7 @@ pub struct Diagnostic {
     pub source: &'static str,
     pub message: String,
     pub code: i32,
-    #[serde(rename = "relatedInformation")]
+    #[serde(rename = "relatedInformation", skip_serializing_if = "Vec::is_empty")]
     pub related: Vec<DiagnosticRelated>,
 }
 
@@ -114,6 +114,13 @@ pub struct DidChangeDocumentParams {
 pub struct DocumentIdentifierParams {
     #[serde(rename = "textDocument")]
     pub document: DocumentIdentifier,
+}
+
+#[derive(Deserialize)]
+pub struct DocumentIdentifierRangeParams {
+    #[serde(rename = "textDocument")]
+    pub document: DocumentIdentifier,
+    pub range: Range,
 }
 
 #[derive(Deserialize)]
@@ -207,13 +214,6 @@ pub struct FormattingParams {
 pub struct RangeFormattingParams {
     #[serde(flatten)]
     pub format: FormattingParams,
-    pub range: Range,
-}
-
-#[derive(Deserialize)]
-pub struct CodeActionParams {
-    #[serde(rename = "textDocument")]
-    pub document: DocumentIdentifier,
     pub range: Range,
 }
 
