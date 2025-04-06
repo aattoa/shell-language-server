@@ -1,6 +1,6 @@
 use crate::indexvec::IndexVec;
 use crate::shell::Shell;
-use crate::{db, define_index, lsp};
+use crate::{define_index, lsp};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -18,7 +18,7 @@ pub struct View {
 #[derive(Clone, Copy)]
 pub struct Location {
     pub range: lsp::Range,
-    pub view: db::View,
+    pub view: View,
 }
 
 #[derive(Clone, Copy)]
@@ -37,15 +37,33 @@ pub struct Variable {
 pub struct Function {
     pub description: Option<String>,
     pub definition: Option<Location>,
-    pub parameters: Vec<db::View>,
+    pub parameters: Vec<Location>,
+}
+
+#[derive(Clone, Copy)]
+pub enum Parameter {
+    Function { id: FunctionId, index: u16 },
+    Script { index: u16 },
+}
+
+#[derive(Clone, Copy)]
+pub enum Special {
+    Question, // $?
+    At,       // $@
+    Star,     // $*
+    Zero,     // $0
+    Dash,     // $-
 }
 
 #[derive(Clone, Copy)]
 pub enum SymbolKind {
     Variable(VariableId),
     Function(FunctionId),
+    Parameter(Parameter),
+    Special(Special),
     Command,
     Builtin,
+    Error,
 }
 
 pub struct Symbol {
@@ -68,6 +86,7 @@ pub struct Action {
 
 #[derive(Default)]
 pub struct DocumentInfo {
+    pub script_parameters: Option<Vec<Location>>,
     pub diagnostics: Vec<lsp::Diagnostic>,
     pub references: Vec<SymbolReference>,
     pub functions: IndexVec<Function, FunctionId>,
@@ -137,6 +156,9 @@ impl DocumentInfo {
     }
     pub fn new_command(&mut self, name: String) -> SymbolId {
         self.symbols.push(Symbol::new(name, SymbolKind::Command))
+    }
+    pub fn new_special(&mut self, name: &str, special: Special) -> SymbolId {
+        self.symbols.push(Symbol::new(String::from(name), SymbolKind::Special(special)))
     }
 }
 

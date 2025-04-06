@@ -262,6 +262,9 @@ impl Position {
             self.character += 1;
         }
     }
+    pub fn horizontal_offset(self, offset: u32) -> Self {
+        Self { line: self.line, character: self.character + offset }
+    }
 }
 
 impl Range {
@@ -270,7 +273,7 @@ impl Range {
         end: Position { line: u32::MAX, character: u32::MAX },
     };
     pub fn for_position(start: Position) -> Self {
-        Self { start, end: Position { line: start.line, character: start.character + 1 } }
+        Self { start, end: start.horizontal_offset(1) }
     }
     pub fn contains(self, position: Position) -> bool {
         self.start <= position && position < self.end // End is exclusive

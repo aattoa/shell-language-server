@@ -26,11 +26,11 @@ based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
 - Find and highlight references
 - Rename variables and functions
 - Complete variable, function, and command names
-- Scoped local variables
+- Scoped local variables and parameters
+- Diagnostics (errors, warnings, hints)
 - Additional diagnostics and code actions through [Shellcheck](https://www.shellcheck.net) integration
 - Document and range formatting through [shfmt](https://github.com/mvdan/sh) integration
 - Intelligent `man` and `help` integration based on the active shell
-- Diagnostics (warnings, errors, hints)
 - Code actions
     - Insert full command path
     - Apply Shellcheck fixes
@@ -52,6 +52,8 @@ based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
     - Inline environment variables
     - Insert Shellcheck directives
     - Change shebang based on usage
+- Inlay hints:
+    - Parameter annotation index
 
 ## Annotations
 
@@ -59,18 +61,23 @@ Annotations are written with special comments that begin with `##@`. They can
 be used by the language server for various purposes, such as improved hover
 documentation and signature help.
 
-Function annotations apply to the first function defined after the annotation.
+### `##@ desc`
+Provide a general description of the next function or variable.
 
-- `desc`: General description
-- `param`: Describe function parameters
+### `##@ param`
+Provide a description of the current function parameter or script parameter.
+The first annotation refers to `$1`, the second one refers to `$2`, and so on.
 
-Example use case:
+### `##@ script`
+Apply previous `param` annotations to the current script instead of the next function.
+
+### Example use case
 
 ```sh
 ##@ desc Write the number of entries in the given directory to stdout
 ##@ param Directory path
 example () {
-    ls -a "$1" | wc -l
+    ls -a -- "$1" | wc -l
 }
 ```
 

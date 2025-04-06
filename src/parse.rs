@@ -7,19 +7,34 @@ use std::collections::HashMap;
 
 type ParseResult<T> = Result<T, lsp::Diagnostic>;
 
+#[derive(Default)]
 struct Annotations {
-    params: Vec<db::View>,
+    params: Vec<db::Location>,
     desc: Option<String>,
+}
+
+#[derive(Default)]
+struct Parameters {
+    declared: Vec<db::SymbolId>,
+    undeclared: HashMap<usize, db::SymbolId>,
+}
+
+struct FunctionState {
+    locals: HashMap<String, db::SymbolId>,
+    params: Parameters,
+    fun_id: db::FunctionId,
+    shift: usize,
 }
 
 struct Context<'a> {
     info: db::DocumentInfo,
     lexer: Lexer<'a>,
     document: &'a str,
+    function: Option<FunctionState>,
     commands: HashMap<String, db::SymbolId>,
     variables: HashMap<String, db::SymbolId>,
-    locals: Option<HashMap<String, db::SymbolId>>,
     annotations: Annotations,
+    script_params: Parameters,
 }
 
 impl<'a> Context<'a> {
@@ -28,10 +43,11 @@ impl<'a> Context<'a> {
             info: db::DocumentInfo { shell, ..db::DocumentInfo::default() },
             lexer: Lexer::new(document),
             document,
+            function: None,
             commands: HashMap::new(),
             variables: HashMap::new(),
-            locals: None,
-            annotations: Annotations { params: Vec::new(), desc: None },
+            annotations: Annotations::default(),
+            script_params: Parameters::default(),
         }
     }
     fn error(&mut self, message: impl Into<String>) -> lsp::Diagnostic {
@@ -85,10 +101,64 @@ fn new_variable(ctx: &mut Context, name: String) -> db::SymbolId {
     id
 }
 
+fn document_scope_special(ctx: &mut Context, name: &str, special: db::Special) -> db::SymbolId {
+    ctx.variables.get(name).copied().unwrap_or_else(|| {
+        let id = ctx.info.new_special(name, special);
+        ctx.variables.insert(String::from(name), id);
+        id
+    })
+}
+
+fn parameter_symbol(ctx: &mut Context, range: lsp::Range, index: usize) -> db::SymbolId {
+    ctx.info.tokens.data.push(lsp::SemanticToken {
+        position: range.start,
+        width: range.end.character - range.start.character,
+        kind: lsp::SemanticTokenKind::Parameter,
+        modifier: lsp::SemanticTokenModifier::None,
+    });
+
+    if index == 0 {
+        return document_scope_special(ctx, "0", db::Special::Zero);
+    }
+
+    if (u16::MAX as usize) < index {
+        ctx.warn(range, format!("Positional parameters are only supported up to {}", u16::MAX));
+        return ctx.info.symbols.push(db::Symbol::new(String::new(), db::SymbolKind::Error));
+    }
+
+    let mut param_symbol = |params: &mut Parameters, param: db::Parameter| {
+        (params.declared.get(index - 1).or_else(|| params.undeclared.get(&index)).copied())
+            .unwrap_or_else(|| {
+                let kind = db::SymbolKind::Parameter(param);
+                let id = ctx.info.symbols.push(db::Symbol::new(format!("${index}"), kind));
+                params.undeclared.insert(index, id);
+                id
+            })
+    };
+
+    if let Some(function) = &mut ctx.function {
+        let param = db::Parameter::Function { id: function.fun_id, index: index as u16 };
+        param_symbol(&mut function.params, param)
+    }
+    else {
+        param_symbol(&mut ctx.script_params, db::Parameter::Script { index: index as u16 })
+    }
+}
+
 fn variable_symbol(ctx: &mut Context, word: Token) -> db::SymbolId {
-    let name = lex::escape(word.view.string(ctx.document));
-    (ctx.locals.as_ref())
-        .and_then(|locals| locals.get(name.as_ref()).copied())
+    let name = word.view.string(ctx.document);
+    if name == "?" {
+        return ctx.info.new_special(name, db::Special::Question);
+    }
+    if name == "-" {
+        return document_scope_special(ctx, name, db::Special::Dash);
+    }
+    if let Ok(index) = name.parse() {
+        return parameter_symbol(ctx, word.range, index);
+    }
+    let name = lex::escape(name);
+    (ctx.function.as_ref())
+        .and_then(|function| function.locals.get(name.as_ref()).copied())
         .or_else(|| ctx.variables.get(name.as_ref()).copied())
         .unwrap_or_else(|| new_variable(ctx, name.into_owned()))
 }
@@ -115,7 +185,7 @@ fn define_function(ctx: &mut Context, word: Token) -> db::SymbolId {
     let id = ctx.info.new_function(name.clone(), db::Function {
         description: ctx.annotations.desc.take(),
         definition: None,
-        parameters: std::mem::take(&mut ctx.annotations.params),
+        parameters: Vec::new(),
     });
     ctx.info.references.push(db::SymbolReference::write(word.range, id));
     ctx.commands.insert(name, id);
@@ -178,43 +248,67 @@ fn add_description(ctx: &mut Context, annotation: db::View) {
     }
 }
 
-fn parse_comment(ctx: &mut Context, token: Token) {
-    if token.kind != TokenKind::Comment {
+fn parse_comment(ctx: &mut Context, comment: Token) {
+    if comment.kind != TokenKind::Comment {
         return;
     }
-    if let Some(line) = token.view.string(ctx.document).strip_prefix("##@").map(str::trim_start) {
+    if let Some(line) = comment.view.string(ctx.document).strip_prefix("##@").map(str::trim_start) {
         let offset = line.find(char::is_whitespace).unwrap_or(line.len());
         let arg_width = line[offset..].trim_start().len() as u32;
-        let annotation = db::View { start: token.view.end - arg_width, end: token.view.end };
+        let annotation = db::View { start: comment.view.end - arg_width, end: comment.view.end };
 
         ctx.info.tokens.data.push(lsp::SemanticToken {
-            position: token.range.start,
-            width: token.range.end.character - token.range.start.character - arg_width,
+            position: comment.range.start,
+            width: comment.range.end.character - comment.range.start.character - arg_width,
             kind: lsp::SemanticTokenKind::Keyword,
             modifier: lsp::SemanticTokenModifier::Documentation,
         });
 
-        let remaining = |kind| lsp::SemanticToken {
+        let arg = lsp::SemanticToken {
             position: lsp::Position {
-                character: token.range.end.character - arg_width,
-                ..token.range.end
+                character: comment.range.end.character - arg_width,
+                line: comment.range.end.line,
             },
             width: arg_width,
-            kind,
+            kind: lsp::SemanticTokenKind::Keyword, // placeholder
             modifier: lsp::SemanticTokenModifier::Documentation,
         };
 
+        let arg_range =
+            lsp::Range { start: arg.position, end: arg.position.horizontal_offset(arg_width) };
+
         match &line[..offset] {
             "desc" => {
-                ctx.info.tokens.data.push(remaining(lsp::SemanticTokenKind::String));
+                let token = lsp::SemanticToken { kind: lsp::SemanticTokenKind::String, ..arg };
+                ctx.info.tokens.data.push(token);
                 add_description(ctx, annotation);
             }
             "param" => {
-                ctx.info.tokens.data.push(remaining(lsp::SemanticTokenKind::Parameter));
-                ctx.annotations.params.push(annotation);
+                let token = lsp::SemanticToken { kind: lsp::SemanticTokenKind::Parameter, ..arg };
+                ctx.info.tokens.data.push(token);
+
+                if ctx.annotations.params.len() == u16::MAX as usize {
+                    let message = format!("Too many parameters! The maximum is {}", u16::MAX);
+                    ctx.warn(comment.range, message);
+                }
+                else {
+                    let location = db::Location { range: arg_range, view: annotation };
+                    ctx.annotations.params.push(location);
+                }
             }
-            "" => ctx.warn(token.range, "Missing directive"),
-            directive => ctx.warn(token.range, format!("Unrecognized directive: '{directive}'")),
+            "script" => {
+                if arg_width != 0 {
+                    ctx.warn(arg_range, "Unexpected argument, ignoring");
+                }
+                if ctx.info.script_parameters.is_some() {
+                    ctx.warn(comment.range, "Duplicate script directive, ignoring");
+                }
+                else {
+                    ctx.info.script_parameters = Some(std::mem::take(&mut ctx.annotations.params));
+                }
+            }
+            "" => ctx.warn(comment.range, "Missing directive"),
+            directive => ctx.warn(comment.range, format!("Unrecognized directive: '{directive}'")),
         }
     }
 }
@@ -458,7 +552,7 @@ fn extract_case(ctx: &mut Context) -> ParseResult<()> {
 fn extract_builtin_local(ctx: &mut Context) -> ParseResult<()> {
     skip_whitespace(ctx);
     while let Some(word) = ctx.lexer.next_if_kind(TokenKind::Word) {
-        if let Some(locals) = &mut ctx.locals {
+        if let Some(function) = &mut ctx.function {
             let name = lex::escape(word.view.string(ctx.document)).into_owned();
             let id = ctx.info.new_variable(name.clone(), db::Variable {
                 description: ctx.annotations.desc.take(),
@@ -466,7 +560,7 @@ fn extract_builtin_local(ctx: &mut Context) -> ParseResult<()> {
                 kind: db::VariableKind::Local,
             });
             ctx.info.references.push(db::SymbolReference::write(word.range, id));
-            locals.insert(name, id);
+            function.locals.insert(name, id);
         }
         else {
             ctx.warn(word.range, "`local` is invalid outside of a function");
@@ -516,14 +610,33 @@ fn extract_builtin_unset(ctx: &mut Context) -> ParseResult<()> {
     Ok(())
 }
 
-fn set_function_location(ctx: &mut Context, sym_id: db::SymbolId, location: db::Location) {
-    match ctx.info.symbols[sym_id].kind {
-        db::SymbolKind::Function(var_id) => {
-            let db::Function { definition, .. } = &mut ctx.info.functions[var_id];
-            *definition = Some(location);
-        }
-        _ => unreachable!(),
+fn function_id(ctx: &Context, symbol: db::SymbolId) -> Option<db::FunctionId> {
+    if let db::SymbolKind::Function(id) = ctx.info.symbols[symbol].kind { Some(id) } else { None }
+}
+
+fn make_parameter_symbols(
+    info: &mut db::DocumentInfo,
+    fun_id: db::FunctionId,
+    annotations: &[db::Location],
+) -> Vec<db::SymbolId> {
+    (annotations.iter().enumerate())
+        .map(|(index, &param)| {
+            info.functions[fun_id].parameters.push(param);
+            let kind = db::Parameter::Function { id: fun_id, index: index as u16 + 1 };
+            info.symbols.push(db::Symbol::new(String::new(), db::SymbolKind::Parameter(kind)))
+        })
+        .collect()
+}
+
+fn make_function_state(ctx: &mut Context, fun_id: db::FunctionId) -> FunctionState {
+    let declared = make_parameter_symbols(&mut ctx.info, fun_id, &ctx.annotations.params);
+    let params = Parameters { declared, undeclared: HashMap::new() };
+    let mut state = FunctionState { locals: HashMap::new(), params, fun_id, shift: 0 };
+    for (name, special) in [("@", db::Special::At), ("*", db::Special::Star)] {
+        state.locals.insert(String::from(name), ctx.info.new_special(name, special));
     }
+    ctx.annotations.params.clear();
+    state
 }
 
 fn extract_function(ctx: &mut Context, word: Token) -> ParseResult<()> {
@@ -531,8 +644,11 @@ fn extract_function(ctx: &mut Context, word: Token) -> ParseResult<()> {
         ctx.warn(word.range, "Invalid function name");
     }
 
-    let id = define_function(ctx, word);
-    let old_locals = std::mem::replace(&mut ctx.locals, Some(HashMap::new()));
+    let sym_id = define_function(ctx, word);
+    let fun_id = function_id(ctx, sym_id).expect("should be a function");
+
+    let state = make_function_state(ctx, fun_id);
+    let previous = std::mem::replace(&mut ctx.function, Some(state));
 
     let result = (|| {
         skip_whitespace(ctx);
@@ -542,11 +658,11 @@ fn extract_function(ctx: &mut Context, word: Token) -> ParseResult<()> {
         skip_empty_lines(ctx);
         extract_statements_until(ctx, kind_matches(&[TokenKind::BraceClose]));
         let last = ctx.expect(TokenKind::BraceClose)?;
-        set_function_location(ctx, id, location(word, last));
+        ctx.info.functions[fun_id].definition = Some(location(word, last));
         Ok(())
     })();
 
-    ctx.locals = old_locals;
+    ctx.function = previous;
     result
 }
 
@@ -697,6 +813,13 @@ fn collect_references(info: &mut db::DocumentInfo) {
     }
 }
 
+fn executables(dirs: &[std::path::PathBuf]) -> Vec<String> {
+    let mut names: Vec<String> = dirs.iter().flat_map(|dir| env::executable_names(dir)).collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
 // TODO: Share symbols between documents.
 fn prepare_environment(ctx: &mut Context, settings: &Settings) {
     if settings.environment.variables {
@@ -709,11 +832,7 @@ fn prepare_environment(ctx: &mut Context, settings: &Settings) {
         if let Some(dirs) = (settings.environment.path.as_deref().map(Cow::Borrowed))
             .or_else(|| env::path_directories().map(Cow::Owned))
         {
-            let mut names: Vec<String> =
-                dirs.iter().flat_map(|dir| env::executable_names(dir)).collect();
-            names.sort_unstable();
-            names.dedup();
-            for name in names {
+            for name in executables(dirs.as_ref()) {
                 ctx.commands.insert(name.clone(), ctx.info.new_command(name));
             }
         }
@@ -721,6 +840,9 @@ fn prepare_environment(ctx: &mut Context, settings: &Settings) {
     for name in shell::builtins(ctx.info.shell).iter().copied().map(String::from) {
         let symbol = ctx.info.symbols.push(db::Symbol::new(name.clone(), db::SymbolKind::Builtin));
         ctx.commands.insert(name, symbol);
+    }
+    for (name, special) in [("@", db::Special::At), ("*", db::Special::Star)] {
+        ctx.variables.insert(String::from(name), ctx.info.new_special(name, special));
     }
 }
 
@@ -744,7 +866,12 @@ fn add_var_assign(ctx: &mut Context, word: Token) {
                 var.description = ctx.annotations.desc.take();
             }
         }
-        _ => unreachable!(),
+        _ => {
+            eprintln!(
+                "[debug] Attempted to add assignment to a non-variable symbol: {}",
+                word.view.string(ctx.document)
+            );
+        }
     }
 }
 

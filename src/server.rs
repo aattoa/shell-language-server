@@ -1,6 +1,6 @@
-use crate::config::{Cmdline, Settings};
+use crate::config::{self, Cmdline, Settings};
 use crate::shell::Shell;
-use crate::{config, db, env, external, lsp, parse, rpc};
+use crate::{db, env, external, lsp, parse, rpc};
 use serde_json::{Value as Json, from_value, json};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -105,15 +105,28 @@ fn find_definition(
 ) -> Option<lsp::Location> {
     let symbol = find_symbol(info, params.position)?;
     match info.symbols[symbol.id].kind {
-        db::SymbolKind::Builtin => None,
         db::SymbolKind::Command => {
             let name = info.symbols[symbol.id].name.as_str();
             let path = if is_path(name) { name.into() } else { find_executable(name, settings)? };
             env::is_script(&path).then_some(lsp::Location::document(path))
         }
-        _ => symbol_references(info, symbol.id)
-            .find(|reference| reference.kind == lsp::ReferenceKind::Write)
-            .map(|reference| lsp::Location { uri: params.document.uri, range: reference.range }),
+        db::SymbolKind::Parameter(parameter) => {
+            let location = match parameter {
+                db::Parameter::Function { id, index } => {
+                    info.functions[id].parameters.get(index as usize - 1)?
+                }
+                db::Parameter::Script { index } => {
+                    info.script_parameters.as_ref()?.get(index as usize - 1)?
+                }
+            };
+            Some(lsp::Location { uri: params.document.uri, range: location.range })
+        }
+        db::SymbolKind::Function(_) | db::SymbolKind::Variable(_) => {
+            symbol_references(info, symbol.id)
+                .find(|reference| reference.kind == lsp::ReferenceKind::Write)
+                .map(|reference| lsp::Location { uri: params.document.uri, range: reference.range })
+        }
+        db::SymbolKind::Error | db::SymbolKind::Builtin | db::SymbolKind::Special(_) => None,
     }
 }
 
@@ -162,7 +175,10 @@ fn variable_completions(document: &db::Document, range: lsp::Range, prefix: &str
 fn function_completions(document: &db::Document, range: lsp::Range, prefix: &str) -> Json {
     (document.info.symbols.underlying.iter())
         .filter(|symbol| {
-            !matches!(symbol.kind, db::SymbolKind::Variable(_)) && symbol.name.starts_with(prefix)
+            matches!(
+                symbol.kind,
+                db::SymbolKind::Command | db::SymbolKind::Builtin | db::SymbolKind::Function(_)
+            ) && symbol.name.starts_with(prefix)
         })
         .map(|symbol| completion(range, &symbol.name, lsp::CompletionItemKind::Function))
         .collect()
@@ -196,18 +212,36 @@ fn describe_variable(kind: db::VariableKind) -> &'static str {
     }
 }
 
+fn special_markdown(special: db::Special) -> String {
+    let desc = |name, result| format!("# Special parameter `${name}`\n---\nExpands to {result}.");
+    match special {
+        db::Special::Zero => desc("0", "the name of the script or the shell"),
+        db::Special::Question => desc("?", "the previous command's exit status"),
+        db::Special::At => desc("@", "the current positional parameters"),
+        db::Special::Star => desc("*", "the current positional parameters"),
+        db::Special::Dash => desc("-", "the shell's current option flags"),
+    }
+}
+
+fn param_description<'a>(text: &'a str, parameters: &[db::Location], index: u16) -> &'a str {
+    match parameters.get(index as usize - 1) {
+        Some(location) => location.view.string(text),
+        None => "This parameter was not declared with a `##@ param` annotation.",
+    }
+}
+
 fn symbol_markup(
     document: &db::Document,
     symbol: &db::Symbol,
     settings: &Settings,
 ) -> Result<lsp::MarkupContent, rpc::Error> {
     use std::fmt::Write;
-    match &symbol.kind {
-        &db::SymbolKind::Variable(id) => {
+    match symbol.kind {
+        db::SymbolKind::Variable(id) => {
             let variable = &document.info.variables[id];
             let mut markdown = format!("# {} `{}`", describe_variable(variable.kind), symbol.name);
             if let Some(desc) = &variable.description {
-                write!(markdown, "\n{desc}")?;
+                write!(markdown, "\n---\n{desc}")?;
             }
             if let Some(location) = variable.first_assignment {
                 write!(
@@ -222,20 +256,20 @@ fn symbol_markup(
             }
             Ok(lsp::MarkupContent::markdown(markdown))
         }
-        &db::SymbolKind::Function(id) => {
+        db::SymbolKind::Function(id) => {
             let db::Function { description, definition, parameters } = &document.info.functions[id];
             let mut markdown = format!("# Function `{}`", symbol.name);
             if let Some(desc) = description {
-                write!(markdown, "\n{desc}")?;
+                write!(markdown, "\n---\n{desc}")?;
             }
             if !parameters.is_empty() {
                 write!(markdown, "\n---\nParameters")?;
-                for (index, param) in parameters.iter().enumerate() {
+                for (index, param) in parameters.iter().copied().enumerate() {
                     write!(
                         markdown,
                         "\n- `${}`: {}",
                         index + 1,
-                        param.string(&document.text).trim()
+                        param.view.string(&document.text).trim()
                     )?;
                 }
             }
@@ -266,6 +300,23 @@ fn symbol_markup(
             }
             Ok(lsp::MarkupContent::markdown(markdown))
         }
+        db::SymbolKind::Parameter(db::Parameter::Function { id, index }) => {
+            Ok(lsp::MarkupContent::markdown(format!(
+                "# Function parameter `${index}`\n---\n{}",
+                param_description(&document.text, &document.info.functions[id].parameters, index)
+            )))
+        }
+        db::SymbolKind::Parameter(db::Parameter::Script { index }) => {
+            let parameters = document.info.script_parameters.as_deref().unwrap_or(&[]);
+            Ok(lsp::MarkupContent::markdown(format!(
+                "# Script parameter `${index}`\n---\n{}",
+                param_description(&document.text, parameters, index)
+            )))
+        }
+        db::SymbolKind::Special(special) => {
+            Ok(lsp::MarkupContent::markdown(special_markdown(special)))
+        }
+        db::SymbolKind::Error => Ok(lsp::MarkupContent::plaintext(String::from("Error"))),
     }
 }
 
