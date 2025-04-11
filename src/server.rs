@@ -41,7 +41,7 @@ fn server_capabilities(settings: &Settings) -> Json {
         "codeActionProvider": true,
         "inlayHintProvider": { "resolveProvider": false },
         "renameProvider": { "prepareProvider": true },
-        "completionProvider": { "triggerCharacters": ["$"] },
+        "completionProvider": { "triggerCharacters": ["$", "{"] },
     })
 }
 
