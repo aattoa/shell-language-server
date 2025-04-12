@@ -278,8 +278,8 @@ impl Range {
     pub fn contains(self, position: Position) -> bool {
         self.start <= position && position < self.end // End is exclusive
     }
-    pub fn contained_by(self, other: Self) -> bool {
-        other.start <= self.start && self.end <= other.end
+    pub fn contains_range(self, other: Self) -> bool {
+        self.start <= other.start && other.end <= self.end
     }
 }
 

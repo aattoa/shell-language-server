@@ -131,9 +131,9 @@ fn find_definition(
     }
 }
 
-fn get_line(document: &db::Document, line: u32) -> Result<&str, rpc::Error> {
+fn get_line(text: &str, line: u32) -> Result<&str, rpc::Error> {
     let error = || rpc::Error::invalid_params(format!("Line {line} out of range"));
-    document.text.lines().nth(line as usize).ok_or_else(error)
+    text.lines().nth(line as usize).ok_or_else(error)
 }
 
 fn is_word(char: char) -> bool {
@@ -249,7 +249,7 @@ fn symbol_markup(
                     markdown,
                     "\n---\nFirst assignment on line {}:\n```sh\n{}\n```",
                     location.range.start.line + 1,
-                    get_line(document, location.range.start.line)?.trim()
+                    get_line(&document.text, location.range.start.line)?.trim()
                 )?;
             }
             else {
@@ -345,6 +345,33 @@ fn analyze(document: &mut db::Document, settings: &Settings) {
                 document.info.actions.extend(actions);
             }
             Err(error) => eprintln!("[debug] Shellcheck failed: {error}"),
+        }
+    }
+}
+
+fn whitespace_prefix(str: &str) -> &str {
+    str.find(|char: char| !char.is_whitespace()).map(|idx| &str[..idx]).unwrap_or_default()
+}
+
+fn insert_shellcheck_disable(text: &str, line: u32, code: i32) -> lsp::TextEdit {
+    let prefix = whitespace_prefix(get_line(text, line).unwrap_or_default());
+    let new_text = format!("{prefix}# shellcheck disable={code}\n");
+    let position = lsp::Position { line, character: 0 };
+    lsp::TextEdit { range: lsp::Range { start: position, end: position }, new_text }
+}
+
+fn code_action(text: &str, uri: &lsp::DocumentURI, action: &db::Action) -> Json {
+    match &action.kind {
+        db::ActionKind::Edit { title, edits } => json!({
+            "title": title,
+            "edit": { "changes": { uri.to_string(): edits } },
+        }),
+        &db::ActionKind::DisableShellcheck { code } => {
+            let edit = insert_shellcheck_disable(text, action.range.start.line, code);
+            json!({
+                "title": format!("SC{code}: Disable this diagnostic on this line"),
+                "edit": { "changes": { uri.to_string(): [edit] } },
+            })
         }
     }
 }
@@ -506,7 +533,7 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
         "textDocument/completion" => {
             let params: lsp::PositionParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
-            let line = get_line(document, params.position.line)?;
+            let line = get_line(&document.text, params.position.line)?;
             let line_prefix = &line[..params.position.character as usize];
             let (offset, kind) = determine_completion_kind(line_prefix, params.position);
             let prefix = &line_prefix[offset..];
@@ -550,15 +577,10 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
             let document = get_document(&server.db, &params.document)?;
             Ok((document.info.actions.iter())
                 .filter(|action| {
-                    action.range.contained_by(params.range)
-                        || params.range.contained_by(action.range)
+                    action.range.contains_range(params.range)
+                        || params.range.contains_range(action.range)
                 })
-                .map(|action| {
-                    json!({
-                        "title": action.title,
-                        "edit": { "changes": { params.document.uri.to_string(): action.edits } }
-                    })
-                })
+                .map(|action| code_action(&document.text, &params.document.uri, action))
                 .chain(action_insert_path(&params, document, &server.settings))
                 .collect())
         }

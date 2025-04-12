@@ -33,6 +33,7 @@ based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
 - Intelligent `man` and `help` integration based on the active shell
 - Code actions
     - Insert full command path
+    - Insert Shellcheck directives
     - Apply Shellcheck fixes
 - Document symbols
 - Enhanced syntax highlighting with semantic tokens
@@ -52,7 +53,6 @@ based on [JSON-RPC](https://en.wikipedia.org/wiki/JSON-RPC).
     - Comment directives
 - Code actions:
     - Inline environment variables
-    - Insert Shellcheck directives
     - Change shebang based on usage
 
 ## Annotations

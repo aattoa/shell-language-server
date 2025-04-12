@@ -78,9 +78,18 @@ pub struct SymbolReference {
     pub id: SymbolId,
 }
 
+pub enum ActionKind {
+    Edit {
+        title: String,
+        edits: Vec<lsp::TextEdit>,
+    },
+    DisableShellcheck {
+        code: i32,
+    },
+}
+
 pub struct Action {
-    pub title: String,
-    pub edits: Vec<lsp::TextEdit>,
+    pub kind: ActionKind,
     pub range: lsp::Range,
 }
 

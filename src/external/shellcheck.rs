@@ -104,18 +104,28 @@ pub struct Info {
 }
 
 fn info(items: Vec<Item>) -> Info {
-    let mut info = Info { diagnostics: Vec::with_capacity(items.len()), actions: Vec::new() };
+    let mut info = Info {
+        diagnostics: Vec::with_capacity(items.len()),
+        actions: Vec::with_capacity(items.len()),
+    };
     for Item { comment, fix } in items {
         if let Some(fix) = fix {
             info.actions.push(db::Action {
-                title: format!("SC{}: {}", comment.code, comment.message),
-                edits: fix.replacements.into_iter().map(text_edit).collect(),
+                kind: db::ActionKind::Edit {
+                    title: format!("SC{}: {}", comment.code, comment.message),
+                    edits: fix.replacements.into_iter().map(text_edit).collect(),
+                },
                 range: range(comment.range),
             });
         }
-        if !is_context_diagnostic(comment.code) {
-            info.diagnostics.push(diagnostic(comment));
+        if is_context_diagnostic(comment.code) {
+            continue;
         }
+        info.actions.push(db::Action {
+            kind: db::ActionKind::DisableShellcheck { code: comment.code },
+            range: range(comment.range),
+        });
+        info.diagnostics.push(diagnostic(comment));
     }
     info
 }
