@@ -8,6 +8,7 @@ pub struct Request {
     #[serde(default)]
     pub params: serde_json::Value,
     pub method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<u32>,
     #[allow(dead_code)]
     pub jsonrpc: JsonRpc,
@@ -78,16 +79,16 @@ impl serde::Serialize for JsonRpc {
     }
 }
 
-fn consume(input: &mut impl Read, bytes: usize) -> bool {
+fn consume(input: &mut dyn Read, bytes: usize) -> bool {
     input.bytes().take(bytes).count() == bytes
 }
 
-pub fn write_message(output: &mut impl Write, content: &str) -> std::io::Result<()> {
+pub fn write_message(output: &mut dyn Write, content: &str) -> std::io::Result<()> {
     write!(output, "Content-Length: {}\r\n\r\n{}", content.len(), content)?;
     output.flush()
 }
 
-pub fn read_message(input: &mut impl Read) -> std::io::Result<String> {
+pub fn read_message(input: &mut dyn Read) -> std::io::Result<String> {
     let error = |msg| Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, msg));
 
     if !consume(input, "Content-Length: ".len()) {
@@ -154,6 +155,12 @@ impl Error {
     }
     pub fn method_not_found(method: &str) -> Self {
         Self::new(ErrorCode::MethodNotFound, format!("Unhandled method: {method}"))
+    }
+}
+
+impl Request {
+    pub fn notification(method: impl Into<String>, params: serde_json::Value) -> Self {
+        Self { params, method: method.into(), id: None, jsonrpc: JsonRpc }
     }
 }
 

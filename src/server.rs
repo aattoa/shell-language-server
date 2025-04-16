@@ -6,12 +6,13 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-#[derive(Default)]
-struct Server {
+struct Server<'io> {
     db: db::Database,
     settings: Settings,
     initialized: bool,
     exit_code: Option<ExitCode>,
+    input: &'io mut dyn std::io::Read,
+    output: &'io mut dyn std::io::Write,
 }
 
 fn server_capabilities(settings: &Settings) -> Json {
@@ -19,10 +20,6 @@ fn server_capabilities(settings: &Settings) -> Json {
         "textDocumentSync": {
             "openClose": true,
             "change": 2, // incremental
-        },
-        "diagnosticProvider": {
-            "interFileDependencies": false,
-            "workspaceDiagnostics": false,
         },
         "semanticTokensProvider": {
             "legend": {
@@ -332,6 +329,18 @@ fn symbol_hover(
     }))
 }
 
+fn push_diagnostics(
+    output: &mut dyn std::io::Write,
+    uri: &lsp::DocumentURI,
+    info: &db::DocumentInfo,
+) -> std::io::Result<()> {
+    let notification = rpc::Request::notification(
+        "textDocument/publishDiagnostics",
+        json!({ "uri": uri, "diagnostics": info.diagnostics }),
+    );
+    rpc::write_message(output, &serde_json::to_string(&notification)?)
+}
+
 fn analyze(document: &mut db::Document, settings: &Settings) {
     document.info = parse::parse(&document.text, settings);
     if settings.integrate.shellcheck.enable {
@@ -525,11 +534,6 @@ fn handle_request(server: &mut Server, method: &str, params: Json) -> Result<Jso
             let edits = collect_references(document, params.position_params.position, edit);
             Ok(json!({ "changes": { params.position_params.document.uri.to_string(): edits } }))
         }
-        "textDocument/diagnostic" => {
-            let params: lsp::DocumentIdentifierParams = from_value(params)?;
-            let document = get_document(&server.db, &params.document)?;
-            Ok(json!({ "kind": "full", "items": document.info.diagnostics }))
-        }
         "textDocument/completion" => {
             let params: lsp::PositionParams = from_value(params)?;
             let document = get_document(&server.db, &params.document)?;
@@ -609,6 +613,7 @@ fn handle_notification(server: &mut Server, method: &str, params: Json) -> Resul
             let params: lsp::DidOpenDocumentParams = from_value(params)?;
             let mut document = db::Document::new(params.document.text);
             analyze(&mut document, &server.settings);
+            push_diagnostics(&mut server.output, &params.document.uri, &document.info)?;
             server.db.open(params.document.uri.path, document);
             Ok(())
         }
@@ -625,6 +630,7 @@ fn handle_notification(server: &mut Server, method: &str, params: Json) -> Resul
                 document.edit(change.range, &change.text);
             }
             analyze(document, &server.settings);
+            push_diagnostics(&mut server.output, &params.document.identifier.uri, &document.info)?;
             Ok(())
         }
         "workspace/didChangeConfiguration" => {
@@ -663,35 +669,47 @@ fn deserialization_error(error: serde_json::Error) -> rpc::Response {
     rpc::Response::error(None, rpc::Error::new(code, error.to_string()))
 }
 
-fn handle_message(server: &mut Server, message: &str) -> Option<String> {
-    let reply = match serde_json::from_str(message) {
+fn handle_message(server: &mut Server, message: &str) -> Option<rpc::Response> {
+    match serde_json::from_str(message) {
         Ok(request) => dispatch_handle_request(server, request),
         Err(error) => Some(deserialization_error(error)),
-    };
-    reply.map(|reply| serde_json::to_string(&reply).expect("Reply serialization failed"))
+    }
 }
 
 pub fn run(cmdline: Cmdline) -> ExitCode {
-    let mut server = Server { settings: cmdline.settings, ..Server::default() };
-    let mut stdin = std::io::stdin().lock();
-    let mut stdout = std::io::stdout().lock();
+    let mut server = Server {
+        db: db::Database::default(),
+        settings: cmdline.settings,
+        initialized: false,
+        exit_code: None,
+        input: &mut std::io::stdin().lock(),
+        output: &mut std::io::stdout().lock(),
+    };
 
     loop {
         if let Some(code) = server.exit_code {
             return code;
         }
-        match rpc::read_message(&mut stdin) {
+        match rpc::read_message(&mut server.input) {
             Ok(message) => {
                 if cmdline.debug {
                     eprintln!("[debug] --> {}", message);
                 }
                 if let Some(reply) = handle_message(&mut server, &message) {
-                    if cmdline.debug {
-                        eprintln!("[debug] <-- {}", reply);
-                    }
-                    if let Err(error) = rpc::write_message(&mut stdout, &reply) {
-                        eprintln!("[debug] Unable to write reply: {error}");
-                        return ExitCode::from(2);
+                    match serde_json::to_string(&reply) {
+                        Ok(reply) => {
+                            if cmdline.debug {
+                                eprintln!("[debug] <-- {}", reply);
+                            }
+                            if let Err(error) = rpc::write_message(&mut server.output, &reply) {
+                                eprintln!("[debug] Unable to write reply: {error}");
+                                return ExitCode::from(2);
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("[debug] Unable to serialize reply: {error}");
+                            return ExitCode::from(2);
+                        }
                     }
                 }
             }
